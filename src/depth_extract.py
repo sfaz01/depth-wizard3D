@@ -32,6 +32,46 @@ from PIL import Image
 import torch
 
 
+def _resize_bilinear(arr: np.ndarray, size_hw: Tuple[int, int]) -> np.ndarray:
+    """Resize a 2-D float array to (H, W) with high-precision bilinear interpolation."""
+    target_h, target_w = size_hw
+    if arr.shape[:2] == (target_h, target_w):
+        return arr.astype(np.float32)
+    t = torch.from_numpy(np.ascontiguousarray(arr)).unsqueeze(0).unsqueeze(0).float()
+    out = torch.nn.functional.interpolate(
+        t, size=(target_h, target_w), mode="bilinear", align_corners=False
+    )
+    return out.squeeze().numpy().astype(np.float32)
+
+
+def _solve_affine(src: np.ndarray, dst: np.ndarray) -> Tuple[float, float]:
+    """
+    Least-squares scale/shift so that ``a * src + b`` best matches ``dst``.
+
+    WHY: Depth Anything V2 output is scale- and shift-invariant, so each tile is
+    predicted in its own arbitrary range. Aligning every tile to a single coarse
+    global prediction is what makes the stitched high-resolution result consistent.
+    """
+    s = np.asarray(src, dtype=np.float64).ravel()
+    d = np.asarray(dst, dtype=np.float64).ravel()
+    finite = np.isfinite(s) & np.isfinite(d)
+    if finite.sum() < 16:
+        return 1.0, 0.0
+    A = np.vstack([s[finite], np.ones(finite.sum())]).T
+    sol, *_ = np.linalg.lstsq(A, d[finite], rcond=None)
+    a, b = float(sol[0]), float(sol[1])
+    if not np.isfinite(a) or not np.isfinite(b) or abs(a) < 1e-8:
+        return 1.0, 0.0
+    return a, b
+
+
+def _feather_window(h: int, w: int) -> np.ndarray:
+    """Separable Hann window used to blend overlapping tiles without visible seams."""
+    wy = np.hanning(h) if h > 1 else np.ones(1)
+    wx = np.hanning(w) if w > 1 else np.ones(1)
+    return np.clip(np.outer(wy, wx), 1e-3, None).astype(np.float32)
+
+
 @dataclass
 class DepthResult:
     """
@@ -146,27 +186,12 @@ class DepthEstimator:
             device=device_arg,
         )
 
-    def predict(
-        self,
-        image_input: Union[str, Path, Image.Image, np.ndarray],
-        robust: bool = True,
-    ) -> DepthResult:
-        """
-        Estimate relative depth from a single RGB image.
-
-        Args:
-            image_input: Filepath, PIL Image, or numpy array (H, W, 3).
-            robust: Whether to use 2/98 percentile normalization (default True).
-
-        Returns:
-            DepthResult containing normalized relative height and raw disparity.
-        """
-        self._load_model()
-
-        # Load & standardize image to RGB PIL Image
+    @staticmethod
+    def _to_pil(image_input: Union[str, Path, Image.Image, np.ndarray]) -> Image.Image:
+        """Coerce any supported input into an RGB PIL image."""
         if isinstance(image_input, (str, Path)):
-            pil_image = Image.open(image_input).convert("RGB")
-        elif isinstance(image_input, np.ndarray):
+            return Image.open(image_input).convert("RGB")
+        if isinstance(image_input, np.ndarray):
             if image_input.dtype != np.uint8:
                 uint8_img = np.clip(image_input * 255.0, 0, 255).astype(np.uint8)
             else:
@@ -175,18 +200,17 @@ class DepthEstimator:
                 uint8_img = np.stack([uint8_img] * 3, axis=-1)
             elif uint8_img.shape[2] == 4:
                 uint8_img = uint8_img[:, :, :3]
-            pil_image = Image.fromarray(uint8_img, mode="RGB")
-        elif isinstance(image_input, Image.Image):
-            pil_image = image_input.convert("RGB")
-        else:
-            raise TypeError(f"Unsupported image input type: {type(image_input)}")
+            return Image.fromarray(uint8_img, mode="RGB")
+        if isinstance(image_input, Image.Image):
+            return image_input.convert("RGB")
+        raise TypeError(f"Unsupported image input type: {type(image_input)}")
 
+    def _infer_raw(self, pil_image: Image.Image) -> np.ndarray:
+        """Run the HF pipeline once and return a float32 disparity array at the image's own size."""
+        self._load_model()
         orig_w, orig_h = pil_image.size
-
-        # Run pipeline inference
         result = self._pipeline(pil_image)
 
-        # Extract predicted disparity array
         if isinstance(result, dict) and "predicted_depth" in result:
             pred_tensor = result["predicted_depth"]
             if isinstance(pred_tensor, torch.Tensor):
@@ -202,20 +226,100 @@ class DepthEstimator:
         else:
             raw_pred = np.asarray(result, dtype=np.float32).squeeze()
 
-        # Resize output back to source resolution with bilinear interpolation if mismatched
-        pred_h, pred_w = raw_pred.shape[:2]
-        if (pred_h, pred_w) != (orig_h, orig_w):
-            # Use PyTorch functional interpolate for high-precision bilinear resizing
-            tensor_in = torch.from_numpy(raw_pred).unsqueeze(0).unsqueeze(0).float()
-            resized = torch.nn.functional.interpolate(
-                tensor_in,
-                size=(orig_h, orig_w),
-                mode="bilinear",
-                align_corners=False,
-            )
-            raw_pred = resized.squeeze().numpy()
+        return _resize_bilinear(raw_pred.astype(np.float32), (orig_h, orig_w))
 
-        # Normalize relative height (disparity -> relative height)
+    def _infer_tiled(
+        self,
+        pil_image: Image.Image,
+        tile: int = 700,
+        overlap: float = 0.33,
+        base_max_dim: int = 768,
+        max_tiles: int = 49,
+    ) -> np.ndarray:
+        """
+        Multi-scale tiled inference for large images.
+
+        1. Predict a coarse global disparity map (captures correct low-frequency shape).
+        2. Predict each overlapping tile at native resolution (captures fine structure).
+        3. Align every tile to the global map with a per-tile scale/shift (the backbone is
+           scale/shift invariant, so this is required for the tiles to agree).
+        4. Blend the aligned tiles with a feathered Hann window to remove seams.
+        """
+        orig_w, orig_h = pil_image.size
+
+        # --- Stage 1: coarse global prediction ---
+        scale = base_max_dim / max(orig_w, orig_h)
+        base_w = max(32, int(round(orig_w * scale)))
+        base_h = max(32, int(round(orig_h * scale)))
+        base_small = self._infer_raw(pil_image.resize((base_w, base_h), Image.Resampling.LANCZOS))
+        base = _resize_bilinear(base_small, (orig_h, orig_w))
+
+        # --- Stage 2/3/4: tiled refinement ---
+        step = max(1, int(round(tile * (1.0 - overlap))))
+        ys = list(range(0, max(1, orig_h - tile) + 1, step)) or [0]
+        xs = list(range(0, max(1, orig_w - tile) + 1, step)) or [0]
+        if ys[-1] != max(0, orig_h - tile):
+            ys.append(max(0, orig_h - tile))
+        if xs[-1] != max(0, orig_w - tile):
+            xs.append(max(0, orig_w - tile))
+
+        if len(ys) * len(xs) > max_tiles:
+            # Too many tiles for the CPU budget - fall back to the coarse map.
+            return base
+
+        acc = np.zeros((orig_h, orig_w), dtype=np.float32)
+        wsum = np.zeros((orig_h, orig_w), dtype=np.float32)
+
+        for y0 in ys:
+            for x0 in xs:
+                y1 = min(y0 + tile, orig_h)
+                x1 = min(x0 + tile, orig_w)
+                crop = pil_image.crop((x0, y0, x1, y1))
+                td = self._infer_raw(crop)
+                a, b = _solve_affine(td, base[y0:y1, x0:x1])
+                aligned = a * td + b
+                win = _feather_window(y1 - y0, x1 - x0)
+                acc[y0:y1, x0:x1] += aligned * win
+                wsum[y0:y1, x0:x1] += win
+
+        combined = np.where(wsum > 1e-6, acc / np.maximum(wsum, 1e-6), base)
+        return combined.astype(np.float32)
+
+    def predict(
+        self,
+        image_input: Union[str, Path, Image.Image, np.ndarray],
+        robust: bool = True,
+        tiled: Union[bool, str] = False,
+        tile_size: int = 700,
+        tile_overlap: float = 0.33,
+    ) -> DepthResult:
+        """
+        Estimate relative depth from a single RGB image.
+
+        Args:
+            image_input: Filepath, PIL Image, or numpy array (H, W, 3).
+            robust: Whether to use 2/98 percentile normalization (default True).
+            tiled: False (single pass), True (force tiled), or "auto" (tile only when the
+                   longest edge exceeds ~1.4x the tile size, where detail is otherwise lost).
+            tile_size: Native-resolution tile edge in pixels.
+            tile_overlap: Fractional overlap between adjacent tiles (0-0.9).
+
+        Returns:
+            DepthResult containing normalized relative height and raw disparity.
+        """
+        pil_image = self._to_pil(image_input)
+        orig_w, orig_h = pil_image.size
+
+        if tiled == "auto":
+            use_tiled = max(orig_w, orig_h) > int(tile_size * 1.4)
+        else:
+            use_tiled = bool(tiled)
+
+        if use_tiled:
+            raw_pred = self._infer_tiled(pil_image, tile=tile_size, overlap=tile_overlap)
+        else:
+            raw_pred = self._infer_raw(pil_image)
+
         norm_depth = normalise_depth(raw_pred, robust=robust)
 
         return DepthResult(

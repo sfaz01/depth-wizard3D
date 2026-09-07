@@ -77,34 +77,34 @@ def test_fastapi_endpoints():
     from fastapi.testclient import TestClient
     from api.main import app
 
-    client = TestClient(app)
+    # Context manager triggers FastAPI lifespan (creates the initial demo job).
+    with TestClient(app) as client:
+        # a. Test Root (serves web/index.html)
+        root_res = client.get("/")
+        assert root_res.status_code == 200, f"GET / failed with status {root_res.status_code}"
+        assert "DepthWizard 3D" in root_res.text, "index.html content not served at root!"
+        print(f"    [OK] GET / (Three.js Viewer)      -> HTTP 200 ({len(root_res.text)} bytes)")
 
-    # a. Test Root (serves web/index.html)
-    root_res = client.get("/")
-    assert root_res.status_code == 200, f"GET / failed with status {root_res.status_code}"
-    assert "DepthWizard 3D" in root_res.text, "index.html content not served at root!"
-    print(f"    [OK] GET / (Three.js Viewer)      -> HTTP 200 ({len(root_res.text)} bytes)")
+        # b. Test /api/result/latest
+        res_latest = client.get("/api/result/latest")
+        assert res_latest.status_code == 200, f"GET /api/result/latest failed: {res_latest.status_code}"
+        data = res_latest.json()
+        assert "manifest" in data and "assets" in data
+        print(f"    [OK] GET /api/result/latest       -> HTTP 200 (Job ID: {data['job_id']})")
 
-    # b. Test /api/result/latest
-    res_latest = client.get("/api/result/latest")
-    assert res_latest.status_code == 200, f"GET /api/result/latest failed: {res_latest.status_code}"
-    data = res_latest.json()
-    assert "manifest" in data and "assets" in data
-    print(f"    [OK] GET /api/result/latest       -> HTTP 200 (Job ID: {data['job_id']})")
+        # c. Test Asset Serving
+        job_id = data["job_id"]
+        hmap_res = client.get(f"/api/assets/{job_id}/heightmap.png")
+        assert hmap_res.status_code == 200, "Failed to fetch heightmap.png"
+        print(f"    [OK] GET /api/assets/.../heightmap -> HTTP 200 ({len(hmap_res.content)} bytes)")
 
-    # c. Test Asset Serving
-    job_id = data["job_id"]
-    hmap_res = client.get(f"/api/assets/{job_id}/heightmap.png")
-    assert hmap_res.status_code == 200, "Failed to fetch heightmap.png"
-    print(f"    [OK] GET /api/assets/.../heightmap -> HTTP 200 ({len(hmap_res.content)} bytes)")
+        bin_res = client.get(f"/api/assets/{job_id}/heightmap.bin")
+        assert bin_res.status_code == 200, "Failed to fetch heightmap.bin"
+        print(f"    [OK] GET /api/assets/.../heightmap.bin -> HTTP 200 ({len(bin_res.content)} bytes)")
 
-    bin_res = client.get(f"/api/assets/{job_id}/heightmap.bin")
-    assert bin_res.status_code == 200, "Failed to fetch heightmap.bin"
-    print(f"    [OK] GET /api/assets/.../heightmap.bin -> HTTP 200 ({len(bin_res.content)} bytes)")
-
-    tex_res = client.get(f"/api/assets/{job_id}/texture.png")
-    assert tex_res.status_code == 200, "Failed to fetch texture.png"
-    print(f"    [OK] GET /api/assets/.../texture.png   -> HTTP 200 ({len(tex_res.content)} bytes)")
+        tex_res = client.get(f"/api/assets/{job_id}/texture.png")
+        assert tex_res.status_code == 200, "Failed to fetch texture.png"
+        print(f"    [OK] GET /api/assets/.../texture.png   -> HTTP 200 ({len(tex_res.content)} bytes)")
 
 
 def main():

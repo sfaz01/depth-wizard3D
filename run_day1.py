@@ -22,6 +22,7 @@ from pathlib import Path
 from PIL import Image
 
 from src.depth_extract import DepthEstimator
+from src.enhance import enhance_shadows
 from src.utils import (
     depth_stats,
     save_colormap,
@@ -37,6 +38,8 @@ def process_single_image(
     estimator: DepthEstimator,
     image_path: Path,
     out_dir: Path,
+    tiled: "bool | str" = False,
+    enhance: bool = False,
 ) -> bool:
     """Process a single image through Stage 1 inference and export routines."""
     stem = image_path.stem
@@ -50,8 +53,9 @@ def process_single_image(
         return False
 
     try:
+        infer_img = enhance_shadows(pil_img) if enhance else pil_img
         # Run monocular depth extraction
-        result = estimator.predict(pil_img, robust=True)
+        result = estimator.predict(infer_img, robust=True, tiled=tiled)
         infer_time = time.perf_counter() - start_time
 
         # Calculate statistics
@@ -131,8 +135,21 @@ def main():
         default="data/output",
         help="Destination directory for output products (default: data/output)",
     )
+    parser.add_argument(
+        "--tiled",
+        type=str,
+        choices=["off", "auto", "on"],
+        default="off",
+        help="Multi-scale tiled inference for large images: off, auto (>~1000px), or on (default: off)",
+    )
+    parser.add_argument(
+        "--enhance-shadows",
+        action="store_true",
+        help="Apply CLAHE shadow enhancement to the input before depth inference",
+    )
 
     args = parser.parse_args()
+    tiled_arg = {"off": False, "on": True, "auto": "auto"}[args.tiled]
 
     input_path = Path(args.input_path)
     out_dir = Path(args.outdir)
@@ -173,7 +190,9 @@ def main():
     failures = 0
 
     for img_file in image_files:
-        success = process_single_image(estimator, img_file, out_dir)
+        success = process_single_image(
+            estimator, img_file, out_dir, tiled=tiled_arg, enhance=args.enhance_shadows
+        )
         if success:
             successes += 1
         else:

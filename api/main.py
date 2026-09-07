@@ -15,6 +15,7 @@ WHY THIS MODULE EXISTS:
    refresh and progressive loading of 16-bit heightmaps and textures.
 """
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,7 @@ from typing import Any, Dict
 import uuid
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -37,29 +39,71 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.depth_extract import DepthEstimator
+from src.enhance import detect_water_mask, enhance_shadows, flatten_water
 from src.georef import align_to_reference, fetch_srtm, is_georeferenced, read_geotiff, to_metric_resolution
 from src.calibrate import apply_calibration, calibrate_depth
 from src.mesh_export import export_for_web
 from src.validate import compute_metrics, error_map, save_error_map
 from src.utils import depth_stats
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    return os.environ.get(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Pipeline tuning via environment (see .env.example).
+MODEL_SIZE = os.environ.get("DW_MODEL_SIZE", "small").strip().lower()
+TILED_MODE = os.environ.get("DW_TILED", "auto").strip().lower()          # auto | on | off
+ENHANCE_SHADOWS = _env_flag("DW_ENHANCE_SHADOWS", False)
+FLATTEN_WATER = _env_flag("DW_FLATTEN_WATER", False)
+
+@contextlib.asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Create the initial demo terrain job on startup (never blocks import, never fatal)."""
+    try:
+        create_initial_demo_job()
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"[WARNING] Could not create initial demo job: {e}", file=sys.stderr)
+    yield
+
+
 app = FastAPI(
     title="DepthWizard API",
     description="Single-View Height Estimation & 3D Flythrough (ISRO PS 26175)",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
-# Enable CORS for local development
+# CORS: wildcard origin is incompatible with credentials, and the viewer is served
+# same-origin anyway. Allow all origins WITHOUT credentials for easy local embedding.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 JOBS_DIR = PROJECT_ROOT / "data" / "web_jobs"
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Keep only the N most recent job folders (plus any job_demo / job_nyc keepsakes).
+MAX_RETAINED_JOBS = int(os.environ.get("DW_MAX_JOBS", "25"))
+_KEEP_JOBS = {"job_demo", "job_nyc"}
+
+
+def prune_old_jobs() -> None:
+    """Delete stale job directories so data/web_jobs does not grow without bound."""
+    try:
+        jobs = [
+            p for p in JOBS_DIR.iterdir()
+            if p.is_dir() and p.name not in _KEEP_JOBS and (p / "manifest.json").exists()
+        ]
+        jobs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for stale in jobs[MAX_RETAINED_JOBS:]:
+            shutil.rmtree(stale, ignore_errors=True)
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"[WARNING] Job pruning failed: {e}", file=sys.stderr)
 
 # Shared depth estimator instance
 _estimator = None
@@ -68,8 +112,12 @@ _estimator = None
 def get_estimator() -> DepthEstimator:
     global _estimator
     if _estimator is None:
-        _estimator = DepthEstimator(model_size="small", device="auto")
+        size = MODEL_SIZE if MODEL_SIZE in {"small", "base", "large"} else "small"
+        _estimator = DepthEstimator(model_size=size, device="auto")
     return _estimator
+
+
+_TILED_ARG = {"on": True, "true": True, "off": False, "false": False}.get(TILED_MODE, "auto")
 
 
 def get_job_directory(job_id: str) -> Path:
@@ -119,7 +167,7 @@ async def process_image_upload(file: UploadFile = File(...)) -> Dict[str, Any]:
 
     print(f"[API] Received upload: {file.filename} ({input_path.stat().st_size} bytes) -> {job_id}")
 
-    try:
+    def _run() -> Dict[str, Any]:
         estimator = get_estimator()
 
         # Check if file is georeferenced
@@ -141,8 +189,20 @@ async def process_image_upload(file: UploadFile = File(...)) -> Dict[str, Any]:
                 rgb_uint8 = rgb_data
 
             height, width = rgb_uint8.shape[:2]
-            depth_res = estimator.predict(rgb_uint8, robust=True)
+
+            infer_rgb = rgb_uint8
+            if ENHANCE_SHADOWS:
+                print("[API] Applying CLAHE shadow enhancement before inference...")
+                infer_rgb = np.asarray(enhance_shadows(rgb_uint8), dtype=np.uint8)
+
+            depth_res = estimator.predict(infer_rgb, robust=True, tiled=_TILED_ARG)
             rel_depth = depth_res.normalized_depth
+
+            if FLATTEN_WATER:
+                water = detect_water_mask(rgb_uint8)
+                if water.any():
+                    print(f"[API] Flattening {int(water.sum()):,} water pixels ({water.mean():.1%}).")
+                    rel_depth = flatten_water(rel_depth, water)
 
             # Attempt SRTM fetch & calibration if key is present
             has_calibrated = False
@@ -193,8 +253,21 @@ async def process_image_upload(file: UploadFile = File(...)) -> Dict[str, Any]:
         else:
             print(f"[API] Standard RGB image detected. Executing Stage 1 Relative Pipeline...")
             pil_img = Image.open(input_path).convert("RGB")
-            depth_res = estimator.predict(pil_img, robust=True)
+
+            infer_img = pil_img
+            if ENHANCE_SHADOWS:
+                print("[API] Applying CLAHE shadow enhancement before inference...")
+                infer_img = enhance_shadows(pil_img)
+
+            depth_res = estimator.predict(infer_img, robust=True, tiled=_TILED_ARG)
             rel_depth = depth_res.normalized_depth
+
+            if FLATTEN_WATER:
+                water = detect_water_mask(pil_img)
+                if water.any():
+                    print(f"[API] Flattening {int(water.sum()):,} water pixels ({water.mean():.1%}).")
+                    rel_depth = flatten_water(rel_depth, water)
+
             stats = depth_stats(rel_depth)
 
             web_assets = export_for_web(
@@ -223,7 +296,14 @@ async def process_image_upload(file: UploadFile = File(...)) -> Dict[str, Any]:
         print(f"[API] Successfully generated web assets for job: {job_id}")
         return {"job_id": job_id, "status": "completed"}
 
+    try:
+        # Heavy ML + geospatial work runs in a worker thread so the event loop
+        # stays free to serve other requests (health checks, asset downloads).
+        result = await run_in_threadpool(_run)
+        prune_old_jobs()
+        return result
     except Exception as e:
+        shutil.rmtree(job_dir, ignore_errors=True)
         print(f"[API ERROR] Failed processing {file.filename}: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc()
@@ -314,9 +394,6 @@ def create_initial_demo_job():
         export_for_web(synth_elev, synth_rgb, demo_job_dir, max_dim=256, is_georeferenced=False)
 
     print("[INFO] Demo 3D terrain job created at data/web_jobs/job_demo")
-
-
-create_initial_demo_job()
 
 
 if __name__ == "__main__":
