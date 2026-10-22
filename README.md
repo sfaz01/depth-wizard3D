@@ -1,3 +1,15 @@
+---
+title: DepthWizard
+emoji: 🌊
+colorFrom: blue
+colorTo: yellow
+sdk: gradio
+sdk_version: 5.9.1
+python_version: "3.11"
+app_file: app.py
+pinned: false
+---
+
 # DepthWizard
 
 **Turn one overhead image into a measurable 3D twin of a neighbourhood. Then raise the river, see which buildings flood, find where people should go, and plan rooftop solar, all in the browser.**
