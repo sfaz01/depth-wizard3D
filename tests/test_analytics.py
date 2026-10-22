@@ -131,3 +131,27 @@ def test_landslide_classes_sum_to_one(town):
     res = A.landslide_susceptibility(ground, float(t["gsd_m"]))
     total = res["stable_lt15"] + res["caution_15_30"] + res["hazard_gt30"]
     assert abs(total - 1.0) < 1e-3
+
+
+def test_detect_water_finds_river():
+    from src.scene import detect_water, split_structures
+    from src.synthetic import relative_from_dsm
+
+    t = make_river_town(256, gsd_m=2.0)
+    _, struct = split_structures(relative_from_dsm(t["dsm"]), 2.0)
+    water = detect_water(t["rgb"], struct, 2.0, dem=t["ground"])
+    river = t["river"]
+    iou = (water & river).sum() / max(1, (water | river).sum())
+    assert iou > 0.6, iou
+
+
+def test_flood_from_permanent_water_ignores_isolated_pits():
+    dsm = np.full((40, 40), 10.0, np.float32)
+    dsm[:, 18:22] = 5.0            # river channel
+    dsm[5:8, 5:8] = 0.0            # deep pit (DEM artefact) far from the river
+    river = np.zeros_like(dsm, bool)
+    river[:, 18:22] = True
+    wet = A.flood_mask(dsm, 6.0, "lowest", water=river)
+    assert wet[:, 18:22].all() and not wet[6, 6]
+    rep = A.flood_report(dsm, dsm, 1.0, 6.0, water=river)
+    assert rep["flooded_area_m2"] == 0  # the river itself is not "flooded"

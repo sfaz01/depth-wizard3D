@@ -34,8 +34,17 @@ class JobManager:
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         self._queue: "queue.Queue[tuple[str, Runner]]" = queue.Queue()
         self._lock = threading.Lock()
+        self._mark_interrupted()
         self._worker = threading.Thread(target=self._loop, name="dw-worker", daemon=True)
         self._worker.start()
+
+    def _mark_interrupted(self) -> None:
+        """Jobs left queued/running by a previous process can never finish; say so."""
+        for d in self.jobs_dir.iterdir():
+            st = read_json(d / "status.json") if d.is_dir() else None
+            if st and st.get("state") in ("queued", "running"):
+                st.update(state="error", stage="Interrupted", error="The server restarted before this scene finished. Build it again.")
+                write_json(d / "status.json", st)
 
     # -- status -------------------------------------------------------------------------
     def job_dir(self, job_id: str) -> Path:

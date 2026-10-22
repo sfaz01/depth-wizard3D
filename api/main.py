@@ -168,6 +168,8 @@ def list_jobs(limit: int = 30):
         if not d.is_dir() or not (d / "manifest.json").exists() or not JOB_ID_RE.match(d.name):
             continue
         m = S.read_json(d / "manifest.json", {})
+        if m.get("version") != 2:
+            continue  # pre-2.0 scenes lack the analytics grids
         scene = m.get("scene") or {}
         out.append({
             "job_id": d.name,
@@ -213,6 +215,7 @@ def job_result(job_id: str):
             "heightmap_sharp_bin": asset("heightmap_sharp.bin") or asset("heightmap.bin"),
             "ground_bin": asset("ground.bin"),
             "labels_bin": asset("labels.bin"),
+            "water_bin": asset("water.bin"),
             "error_map": asset("error_map.png"),
             "thumb": asset("thumb.jpg"),
         },
@@ -280,17 +283,19 @@ def _flood_source(req: FloodRequest):
 
 @app.post("/api/jobs/{job_id}/flood")
 def flood(job_id: str, req: FloodRequest):
-    m, dsm, ground, labels, buildings = S.load_grids(job_dir(job_id))
+    d = job_dir(job_id)
+    m, dsm, ground, labels, buildings = S.load_grids(d)
     return A.flood_report(dsm, ground, float(m["gsd_m"]), req.level_m, labels, buildings,
-                          source=_flood_source(req), max_listed=200)
+                          source=_flood_source(req), max_listed=200, water=S.load_water(d))
 
 
 @app.post("/api/jobs/{job_id}/safe_zones")
 def safe_zones(job_id: str, req: FloodRequest):
-    m, dsm, ground, labels, buildings = S.load_grids(job_dir(job_id))
+    d = job_dir(job_id)
+    m, dsm, ground, labels, buildings = S.load_grids(d)
     return {"level_m": req.level_m,
             "zones": A.safe_zones(dsm, ground, float(m["gsd_m"]), req.level_m, labels, buildings,
-                                  source=_flood_source(req))}
+                                  source=_flood_source(req), water=S.load_water(d))}
 
 
 @app.get("/api/jobs/{job_id}/solar")

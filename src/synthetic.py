@@ -65,7 +65,7 @@ def make_river_town(size: int = 256, gsd_m: float = 2.0, seed: int = 7) -> Dict[
     rgb[...] = (172, 160, 130)
     grass = ndi.gaussian_filter((ground > 18).astype(np.float32), 2)
     rgb = rgb * (1 - grass[..., None]) + np.array([86, 130, 70]) * grass[..., None]
-    rgb[river] = (52, 92, 140)
+    rgb[river] = (34, 62, 96)
     roof_tone = 120 + 60 * ((labels * 37) % 7) / 6.0
     roofs = labels > 0
     rgb[roofs] = np.stack([roof_tone, roof_tone * 0.95, roof_tone * 0.9], -1)[roofs]

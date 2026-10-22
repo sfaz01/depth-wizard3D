@@ -77,10 +77,11 @@ def gsd_at(lat: float, z: int) -> float:
     return EARTH_CIRCUMFERENCE_M * math.cos(math.radians(lat)) / (TILE * 2 ** z)
 
 
-def choose_zoom(bbox: BBox, target_px: int = 1024, max_zoom: int = MAX_IMAGERY_ZOOM) -> int:
+def choose_zoom(bbox: BBox, target_px: int = 1024, max_zoom: int = MAX_IMAGERY_ZOOM, round_up: bool = False) -> int:
     lat, _ = bbox.center
     width_m = max(bbox.size_m())
-    z = int(math.floor(math.log2(EARTH_CIRCUMFERENCE_M * math.cos(math.radians(lat)) * target_px / (TILE * width_m))))
+    rnd = math.ceil if round_up else math.floor
+    z = int(rnd(math.log2(EARTH_CIRCUMFERENCE_M * math.cos(math.radians(lat)) * target_px / (TILE * width_m))))
     return int(np.clip(z, 1, max_zoom))
 
 
@@ -131,9 +132,16 @@ class TileFetcher:
         return np.asarray(crop)
 
     def imagery(self, bbox: BBox, target_px: int = 1024) -> Tuple[np.ndarray, int, float]:
-        z = choose_zoom(bbox, target_px)
+        """Fetch one zoom level finer than needed, then downsample to <= target_px (sharper)."""
+        z = choose_zoom(bbox, target_px, round_up=True)
         rgb = self.mosaic(IMAGERY_URL, bbox, z, "RGB")
-        return rgb, z, gsd_at(bbox.center[0], z)
+        gsd = gsd_at(bbox.center[0], z)
+        h, w = rgb.shape[:2]
+        if max(h, w) > target_px:
+            f = target_px / max(h, w)
+            img = Image.fromarray(rgb).resize((max(1, round(w * f)), max(1, round(h * f))), Image.Resampling.LANCZOS)
+            rgb, gsd = np.asarray(img), gsd * w / img.size[0]
+        return rgb, z, gsd
 
     def elevation(self, bbox: BBox, out_shape: Tuple[int, int]) -> np.ndarray:
         """Bare-earth elevation (m) resampled to out_shape (H, W)."""

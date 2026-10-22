@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from src import analytics as A
-from src.scene import load_grids, read_json, write_json
+from src.scene import load_grids, load_water, read_json, write_json
 
 LLM_BASE_URL = os.environ.get("DW_LLM_BASE_URL", "http://localhost:11434/v1").rstrip("/")
 LLM_MODEL = os.environ.get("DW_LLM_MODEL", "qwen2.5:3b")
@@ -29,7 +29,7 @@ LLM_API_KEY = os.environ.get("DW_LLM_API_KEY", "")
 LLM_TIMEOUT = float(os.environ.get("DW_LLM_TIMEOUT", "25"))
 
 ACTION_DOC = """Available actions (JSON objects with a "type" field):
-- {"type":"flood","rise_m":<number>}      water rises this many metres above the lowest ground (river level)
+- {"type":"flood","rise_m":<number>}      water rises this many metres above normal river level
 - {"type":"flood","level_m":<number>}     water surface at an absolute elevation in metres
   optional "source": "lowest" (river, default) | "edges" (regional/storm surge) | "rain" (ponding everywhere)
 - {"type":"flood_clear"}                  remove the water
@@ -228,8 +228,11 @@ def solar_for_job(job_dir: Path) -> Dict:
 def execute(job_dir: Path, actions: List[Dict], state: Optional[Dict] = None) -> Tuple[str, List[Dict]]:
     state = state or {}
     m, dsm, ground, labels, buildings = load_grids(job_dir)
+    water = load_water(job_dir)
     gsd = float(m["gsd_m"])
-    gmin = float(read_json(job_dir / "analysis.json", {}).get("ground_min_m", float(ground.min())))
+    an = read_json(job_dir / "analysis.json", {})
+    gmin = float(an.get("flood_datum_m", an.get("ground_min_m", float(ground.min()))))
+    datum_name = "normal water level" if an.get("water_level_m") is not None else "the lowest ground"
     level = state.get("flood_level_m")
     source = state.get("flood_source", "lowest")
     lines: List[str] = []
@@ -240,12 +243,12 @@ def execute(job_dir: Path, actions: List[Dict], state: Optional[Dict] = None) ->
         if t == "flood":
             level = resolve_level(a, gmin, level)
             source = a.get("source", source)
-            rep = A.flood_report(dsm, ground, gsd, level, labels, buildings, source=source)
+            rep = A.flood_report(dsm, ground, gsd, level, labels, buildings, source=source, water=water)
             sev = rep["severity_counts"]
             lines.append(
-                f"Water at {level:.1f} m ({level - gmin:+.1f} m above the river bed) floods "
+                f"Water at {level:.1f} m ({level - gmin:+.1f} m above {datum_name}) floods "
                 f"{_fmt_area(rep['flooded_area_m2'])} ({rep['flooded_fraction'] * 100:.1f}% of the scene), "
-                f"max depth {rep['max_depth_m']:.1f} m. {rep['buildings_affected']} buildings reached "
+                f"max depth {rep['max_depth_m']:.1f} m. {_n(rep['buildings_affected'], 'building')} reached "
                 f"(≈{rep['est_people_affected']:,} people) — {sev['critical']} critical, {sev['severe']} severe, "
                 f"{sev['moderate']} moderate."
             )
@@ -257,11 +260,11 @@ def execute(job_dir: Path, actions: List[Dict], state: Optional[Dict] = None) ->
             out.append({"type": "flood_clear"})
         elif t == "safe_zones":
             lv = level if level is not None else gmin + 2.0
-            zones = A.safe_zones(dsm, ground, gsd, lv, labels, buildings, source=source)
+            zones = A.safe_zones(dsm, ground, gsd, lv, labels, buildings, source=source, water=water)
             if zones:
                 best = zones[0]
                 lines.append(
-                    f"{len(zones)} evacuation points for water at {lv:.1f} m. Best open ground: "
+                    f"{_n(len(zones), 'evacuation point')} for water at {lv:.1f} m. Best open ground: "
                     f"{_fmt_area(best['area_m2'])} with {best['freeboard_m']:.1f} m freeboard."
                 )
             else:
@@ -283,7 +286,7 @@ def execute(job_dir: Path, actions: List[Dict], state: Optional[Dict] = None) ->
                 crit.append(f"≤ {float(a['max_height_m']):g} m")
             if a.get("top_n"):
                 crit.append(f"top {int(a['top_n'])}")
-            lines.append(f"{len(sel)} buildings {' '.join(crit) or 'selected'} (≈{occ:,} occupants).")
+            lines.append(f"{_n(len(sel), 'building')} {' '.join(crit) or 'selected'} (≈{occ:,} occupants).")
             out.append({"type": "highlight_buildings", "ids": [b.id for b in sel]})
         elif t == "fly_to":
             target = a.get("target", "tallest")
@@ -316,13 +319,17 @@ def execute(job_dir: Path, actions: List[Dict], state: Optional[Dict] = None) ->
             bs = an.get("buildings", {})
             tr = an.get("terrain", {})
             lines.append(
-                f"{bs.get('count', 0)} buildings, tallest {bs.get('tallest_m', 0):.0f} m, mean "
+                f"{_n(bs.get('count', 0), 'building')}, tallest {bs.get('tallest_m', 0):.0f} m, mean "
                 f"{bs.get('mean_height_m', 0):.0f} m, ≈{bs.get('est_occupants', 0):,} occupants. Ground spans "
                 f"{an.get('ground_min_m', 0):.0f}–{an.get('ground_max_m', 0):.0f} m; "
                 f"{tr.get('hazard_gt30', 0) * 100:.1f}% of terrain is steeper than 30°."
             )
             out.append({"type": "report"})
     return " ".join(lines), out
+
+
+def _n(count: int, noun: str) -> str:
+    return f"{count:,} {noun}{'' if count == 1 else 's'}"
 
 
 def _fmt_hour(h: float) -> str:

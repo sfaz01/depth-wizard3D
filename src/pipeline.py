@@ -6,9 +6,11 @@ Each `run_*` function has the signature runner(job_dir, progress) expected by Jo
 
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
 import os
 from pathlib import Path
 import threading
+import time
 from typing import Callable, Dict, Optional
 
 import numpy as np
@@ -52,23 +54,42 @@ def _depth(rgb: np.ndarray, progress: Progress) -> np.ndarray:
     return est.predict(Image.fromarray(rgb), robust=True).normalized_depth
 
 
-def _calibrate(job_dir: Path, source: Dict, progress: Progress) -> None:
+_osm_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="dw-osm")
+OSM_BUDGET_S = float(os.environ.get("DW_OSM_BUDGET_S", "60"))
+
+
+def _start_osm(bbox: BBox) -> Optional[Future]:
+    """Fetch OSM footprints in the background while the depth model runs."""
+    if os.environ.get("DW_OSM", "1") == "0":
+        return None
+    from src.osm import fetch_osm_buildings
+
+    return _osm_pool.submit(fetch_osm_buildings, bbox, 20.0, "data/cache/osm", 1)
+
+
+def _calibrate(job_dir: Path, source: Dict, progress: Progress, osm: Optional[Future] = None,
+               started: float = 0.0) -> None:
     scale = S.default_scale(source)
-    if source.get("bbox") and os.environ.get("DW_OSM", "1") != "0":
+    if source.get("bbox") and osm is not None:
         try:
-            S.fetch_osm(job_dir, progress)
+            progress("Fetching OpenStreetMap building footprints", 0.68)
+            buildings = osm.result(timeout=max(5.0, OSM_BUDGET_S - (time.time() - started)))
+            S.save_osm(job_dir, buildings)
             fit = S.calibrate_with_osm(job_dir, progress)
             if fit:
                 scale.update(height_ref_m=fit["height_ref_m"], method="osm",
                              note=f"Fitted to {fit['n_buildings']} OpenStreetMap buildings with height tags.",
                              osm=fit)
         except Exception as e:  # OSM mirrors are best-effort; keep the prior
-            scale["note"] = f"OSM calibration unavailable ({e.__class__.__name__}); using prior."
+            reason = "timed out" if isinstance(e, FutureTimeout) else e.__class__.__name__
+            scale["note"] = f"OpenStreetMap unavailable ({reason}); using an assumed scale."
     S.write_json(job_dir / "scale.json", scale)
 
 
 def run_map(bbox: BBox, name: str = "", fetcher: Optional[TileFetcher] = None):
     def runner(job_dir: Path, progress: Progress) -> None:
+        started = time.time()
+        osm = _start_osm(bbox)
         data = fetch_scene(bbox, fetcher=fetcher, progress=progress)
         rel = _depth(data["rgb"], progress)
         source = {
@@ -83,7 +104,7 @@ def run_map(bbox: BBox, name: str = "", fetcher: Optional[TileFetcher] = None):
             "attribution": "Imagery: Esri, Maxar, Earthstar Geographics. Terrain: AWS Terrain Tiles (SRTM/NED). Heights: OpenStreetMap contributors.",
         }
         S.prepare_inputs(job_dir, data["rgb"], rel, source, dem=data["dem"])
-        _calibrate(job_dir, source, progress)
+        _calibrate(job_dir, source, progress, osm, started)
         S.build_assets(job_dir, progress)
 
     return runner
@@ -131,6 +152,8 @@ def _run_geotiff(path: Path, name: str, job_dir: Path, progress: Progress) -> No
 
     w, s, e, n = transform_bounds(crs, "EPSG:4326", *bounds)
     bbox = BBox(w, s, e, n)
+    started = time.time()
+    osm = _start_osm(bbox)
     rel = _depth(rgb, progress)
     progress("Downloading terrain elevation", 0.6)
     dem = None
@@ -142,7 +165,7 @@ def _run_geotiff(path: Path, name: str, job_dir: Path, progress: Progress) -> No
     source = {"kind": "geotiff", "name": name or path.stem, "lat": lat, "lon": lon, "bbox": bbox.__dict__,
               "gsd_m": gsd, "crs": crs.to_string()}
     S.prepare_inputs(job_dir, rgb, rel, source, dem=dem)
-    _calibrate(job_dir, source, progress)
+    _calibrate(job_dir, source, progress, osm, started)
     S.build_assets(job_dir, progress)
 
 
@@ -158,6 +181,7 @@ def run_demo():
         rel = relative_from_dsm(t["dsm"])
         S.prepare_inputs(job_dir, t["rgb"], rel, source)
         np.save(job_dir / "dsm.npy", t["dsm"])  # exact truth, bypasses compose_dsm
+        np.save(job_dir / "water_mask.npy", t["river"])
         scale = S.default_scale(source)
         scale.update(method="ground_truth", note="Synthetic scene with exact heights.")
         S.write_json(job_dir / "scale.json", scale)

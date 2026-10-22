@@ -262,7 +262,8 @@ def buildings_summary(buildings: Sequence[Building]) -> Dict[str, float]:
 FloodSource = Union[str, Tuple[int, int], np.ndarray]
 
 
-def flood_mask(dsm: np.ndarray, level_m: float, source: FloodSource = "lowest") -> np.ndarray:
+def flood_mask(dsm: np.ndarray, level_m: float, source: FloodSource = "lowest",
+               water: Optional[np.ndarray] = None) -> np.ndarray:
     """
     Cells that are under water when the water surface stands at `level_m`.
 
@@ -270,7 +271,8 @@ def flood_mask(dsm: np.ndarray, level_m: float, source: FloodSource = "lowest") 
     it is hydraulically connected to the source, so a basin behind a ridge stays dry.
 
     source:
-        "lowest" - water enters at the lowest part of the scene (river / sea).
+        "lowest" - water enters from the permanent water body (river / sea) when `water`
+                   is given, otherwise from the lowest part of the scene.
         "edges"  - water enters from any scene border (storm surge, regional flood).
         "rain"   - every cell below the level fills (ponding; no connectivity rule).
         (row, col) - a clicked point, e.g. a river bank or a breached embankment.
@@ -290,7 +292,10 @@ def flood_mask(dsm: np.ndarray, level_m: float, source: FloodSource = "lowest") 
         seeds[0, :] = seeds[-1, :] = True
         seeds[:, 0] = seeds[:, -1] = True
     elif isinstance(source, str) and source == "lowest":
-        seeds = arr <= np.percentile(arr, 0.5)
+        if water is not None and water.any():
+            seeds = water.astype(bool)
+        else:
+            seeds = arr <= np.percentile(arr, 0.5)
     elif isinstance(source, (tuple, list)) and len(source) == 2:
         seeds = np.zeros_like(below)
         r = int(np.clip(source[0], 0, arr.shape[0] - 1))
@@ -326,9 +331,12 @@ def flood_report(
     buildings: Optional[Sequence[Building]] = None,
     source: FloodSource = "lowest",
     max_listed: int = 25,
+    water: Optional[np.ndarray] = None,
 ) -> Dict:
-    """Full flood impact report for one water level."""
-    wet = flood_mask(dsm, level_m, source)
+    """Full flood impact report for one water level (permanent water is not counted as flooded)."""
+    wet = flood_mask(dsm, level_m, source, water)
+    if water is not None:
+        wet &= ~water.astype(bool)
     px_area = gsd_m * gsd_m
     depth = np.where(wet, level_m - np.asarray(dsm, np.float32), 0.0)
     n_wet = int(wet.sum())
@@ -382,6 +390,7 @@ def flood_report(
     report["est_people_affected"] = int(sum(a["est_people"] for a in affected))
     report["affected"] = affected[:max_listed]
     report["affected_ids"] = [a["id"] for a in affected]
+    report["affected_severity"] = {str(a["id"]): a["severity"] for a in affected}
     return report
 
 
@@ -395,13 +404,16 @@ def safe_zones(
     source: FloodSource = "lowest",
     n: int = 5,
     min_area_m2: float = 400.0,
+    water: Optional[np.ndarray] = None,
 ) -> List[Dict]:
     """
     Candidate assembly points for evacuation: the largest dry open-ground patches with the
     most freeboard above the water, plus the tallest unaffected-roof buildings as vertical
     refuges.
     """
-    wet = flood_mask(dsm, level_m, source)
+    wet = flood_mask(dsm, level_m, source, water)
+    if water is not None:
+        wet |= water.astype(bool)
     open_ground = ~wet
     if labels is not None:
         open_ground &= labels == 0

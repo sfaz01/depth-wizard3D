@@ -45,7 +45,7 @@ def test_answer_flood_is_grounded(demo_job):
     assert res["engine"] == "rules"
     flood = [a for a in res["actions"] if a["type"] == "flood"][0]
     assert flood["level_m"] == pytest.approx(13.0, abs=0.01)  # demo river bed is at 8 m
-    assert "buildings reached" in res["reply"]
+    assert "reached" in res["reply"]
     assert len(flood["affected_ids"]) > 0
 
 
