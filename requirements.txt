@@ -4,6 +4,9 @@
 #   CPU:        pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 #   NVIDIA GPU: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 # Then: pip install -r requirements.txt
+# (Hosted installs such as Hugging Face Spaces get the CPU build from the line below.)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
 
 transformers>=4.40.0
 numpy>=1.24.0
