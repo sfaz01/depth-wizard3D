@@ -91,17 +91,22 @@ def detect_water(rgb: np.ndarray, struct: np.ndarray, gsd_m: float, dem: Optiona
     """
     Permanent water (rivers, lakes, sea) from an RGB image without a NIR band.
 
-    Water is dark, smooth, flat in the depth map, not red-dominant, large, and - when a
-    DEM is available - sits in the lower part of the terrain. The last cue rejects shaded
-    parks and street canyons, which pass the colour tests.
+    Water is smooth, flat in the depth map, not red-dominant and large; it is either dark or
+    glassy (silty rivers can be brighter than land). When a DEM is available it must sit in
+    the lower part of the terrain, and narrow bodies must not be lined with structures -
+    these two cues reject shaded parks and street canyons, which pass the colour tests.
     """
     f = np.asarray(rgb, np.float32) / 255.0
     lum = f.mean(-1)
     mean = ndi.uniform_filter(lum, 5)
     tex = np.sqrt(np.clip(ndi.uniform_filter(lum ** 2, 5) - mean ** 2, 0, None))
-    relaxed = ((lum < np.percentile(lum, 35)) & (ndi.uniform_filter(struct, 9) < 0.06)
-               & (f[..., 0] <= f[..., 1] + 0.04))
-    cand = relaxed & (tex < 0.035)
+    flat = ndi.uniform_filter(struct, 9) < 0.06
+    not_red = f[..., 0] <= f[..., 1] + 0.04
+    dark = lum < np.percentile(lum, 35)
+    relaxed = flat & not_red & (dark | (lum < 0.45))
+    # Two kinds of water: dark and smooth (clear rivers, lakes), or glassy-smooth but bright
+    # (silt-laden rivers like the Brahmaputra, which can be brighter than the city around them).
+    cand = flat & not_red & ((dark & (tex < 0.035)) | ((tex < 0.012) & (lum < 0.45)))
     cand = ndi.binary_closing(ndi.binary_opening(cand, iterations=2), iterations=3)
     # Smooth-texture cores miss the strip along each bank (the texture window sees the
     # shore); grow back into adjacent dark, flat pixels.
@@ -112,7 +117,7 @@ def detect_water(rgb: np.ndarray, struct: np.ndarray, gsd_m: float, dem: Optiona
     idx = np.arange(1, n + 1)
     keep = np.bincount(lab.ravel(), minlength=n + 1)[1:] * gsd_m * gsd_m >= min_area_m2
     if dem is not None:
-        low = np.percentile(dem, 40)
+        low = np.percentile(dem, 40) + 1.5  # tolerance: a wide river can *be* the 40th percentile
         keep &= np.asarray(ndi.median(dem, lab, idx)) <= low
     # Shadowed street canyons pass the colour tests too. Accept a body if it is wide
     # (half-width > 30 m) or if its shoreline is not lined with structures.
@@ -123,7 +128,14 @@ def detect_water(rgb: np.ndarray, struct: np.ndarray, gsd_m: float, dem: Optiona
     keep &= (half_width > 30.0) | (shore_p75 < 0.055)
     ok = np.zeros(n + 1, bool)
     ok[1:] = keep
-    return ndi.binary_fill_holes(ok[lab])
+    water = ok[lab]
+    # Fill boats, glints and wave texture, but keep real islands dry.
+    holes, nh = ndi.label(ndi.binary_fill_holes(water) & ~water)
+    if nh:
+        small = np.bincount(holes.ravel(), minlength=nh + 1) * gsd_m * gsd_m < min_area_m2
+        small[0] = False
+        water |= small[holes]
+    return water
 
 
 def compose_dsm(rel: np.ndarray, gsd_m: float, scale: Dict, dem: Optional[np.ndarray] = None,
@@ -160,7 +172,9 @@ def default_scale(source: Dict) -> Dict:
         "terrain_relief_m": DEFAULT_TERRAIN_RELIEF_M,
         "gsd_m": float(source.get("gsd_m") or 0.5),
         "method": "prior",
-        "note": "Assumed scale - calibrate with a building of known height or let OSM fit it.",
+        "note": ("Assumed scale. Select a building of known height to calibrate."
+                 if not source.get("bbox") else
+                 "Assumed scale; OpenStreetMap had no usable heights here. Select a building of known height to calibrate."),
     }
 
 

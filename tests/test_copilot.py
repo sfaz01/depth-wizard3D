@@ -57,3 +57,50 @@ def test_answer_combo_and_solar(demo_job):
     solar = [a for a in res["actions"] if a["type"] == "solar"][0]
     assert solar["buildings"] and "MWh/yr" in res["reply"]
     assert (demo_job / "solar.json").exists()
+
+
+def test_llm_backend_is_used_and_validated(demo_job, monkeypatch):
+    """A fake OpenAI-compatible server: the copilot must use its actions, drop invalid ones,
+    and still compute every number itself."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    seen = {}
+
+    class Fake(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            self._send({"data": [{"id": "fake"}]})
+
+        def do_POST(self):
+            seen["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            content = json.dumps({"actions": [{"type": "flood", "rise_m": 2.5},
+                                              {"type": "delete_everything"}]})
+            self._send({"choices": [{"message": {"content": "Sure! " + content}}]})
+
+    srv = HTTPServer(("127.0.0.1", 0), Fake)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    monkeypatch.setenv("DW_LLM", "1")
+    monkeypatch.setattr(C, "LLM_BASE_URL", f"http://127.0.0.1:{srv.server_port}/v1")
+    monkeypatch.setattr(C, "LLM_MODEL", "fake")
+    C._llm_state.update(checked=0.0, ok=False)
+    try:
+        res = C.answer(demo_job, "the river is rising, what happens at two and a half metres?")
+    finally:
+        srv.shutdown()
+        C._llm_state.update(checked=0.0, ok=False)
+    assert res["engine"] == "llm:fake"
+    assert [a["type"] for a in res["parsed"]] == ["flood"]
+    assert res["actions"][0]["level_m"] == pytest.approx(10.5, abs=0.01)
+    assert seen["body"]["model"] == "fake" and seen["body"]["messages"][0]["role"] == "system"

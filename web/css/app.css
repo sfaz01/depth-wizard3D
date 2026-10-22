@@ -249,17 +249,21 @@ dialog::backdrop { background: rgba(5, 10, 20, 0.7); }
   :root { --copilot: 300px; --drawer: 300px; }
 }
 @media (max-width: 820px) {
-  #copilot { top: auto; height: 46vh; left: var(--gap); width: auto; }
-  #copilot.min { height: auto; }
-  #drawer { top: auto; left: var(--gap); right: var(--gap); width: auto; bottom: calc(46vh + 2 * var(--gap)); max-height: 34vh; }
+  :root { --gap: 8px; }
+  #scenebar { right: var(--gap); }
+  .scene-id h1, .scene-id p { max-width: none; }
   #rail { top: 70px; flex-direction: row; }
-  #rail .rail-btn { width: 54px; }
-  #drawer { display: none; }
-  #drawer.mobile-open { display: block; }
-  #gauge { right: var(--gap); top: 140px; bottom: calc(46vh + 3 * var(--gap)); width: 70px; }
+  #rail .rail-btn { width: 56px; }
+  /* Drawer and copilot become bottom sheets so the 3D view stays visible. */
+  #drawer { top: auto; left: var(--gap); right: var(--gap); bottom: var(--gap); width: auto; max-height: 48vh; }
+  #copilot { top: auto; left: var(--gap); width: auto; height: 55vh; }
+  #copilot-tab { top: auto; bottom: var(--gap); }
+  #drawer:not(.closed) ~ #copilot-tab { display: none; }
+  #gauge { right: var(--gap); top: 140px; bottom: calc(48vh + 2 * var(--gap)); width: 70px; }
   #readout { display: none !important; }
-  #card { bottom: calc(46vh + 2 * var(--gap)); }
+  #card { bottom: calc(48vh + 2 * var(--gap)); }
   .grid2 { grid-template-columns: 1fr; }
+  .dlg-head { flex-wrap: wrap; }
 }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

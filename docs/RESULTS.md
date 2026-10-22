@@ -1,65 +1,59 @@
-# DepthWizard: Validation Metrics & Experimental Results
+# Results
 
-**Smart India Hackathon 2026** · **Problem Statement 26175** · **ISRO**
+Everything here was measured on this codebase, either by `python -m pytest tests` or by building the named scenes with `dw.py` on a CPU-only machine (Depth Anything V2 Small).
 
-This document compiles quantitative benchmarks and empirical results across synthetic ground-truth tests, real-world satellite scenes, and deliberate failure/edge cases.
+## 1. Analytics against known ground truth
 
----
+The procedural "River Town" (`src/synthetic.py`) has exact terrain, building footprints and heights: 256 × 256 cells at 2 m, 139 buildings from 6 m to 30 m, and a river valley rising 8 → 60 m.
 
-## 1. Master Benchmark Summary Table
+| Check | Result |
+|---|---|
+| Buildings detected | **139 / 139** matched to their true footprint, with no merges |
+| Building height error | **0.99 m** mean absolute (bias +0.99 m; the p90 roof height is measured against the local ground) |
+| Bare-earth ground error | **0.05 m** mean absolute (two-pass opening, then normalised-convolution refinement) |
+| Flood connectivity | water at 9 m fills > 95% of the river channel and < 5% of the banks; a basin behind a ridge stays dry until its own source is chosen |
+| Permanent-water detection | river IoU > 0.6 from RGB + depth + DEM alone |
+| Sun position | matches the NOAA reference to < 1°; JS and Python agree to 1e-6° |
+| Browser vs server flood fill | identical cell counts for 12 level/source combinations, with and without a water mask |
 
-| Scene / Test Identifier | Terrain Type | Pipeline Mode | Input Resolution | Metric Elevation Range | Variance ($\text{std}$) | $R^2$ / Corr ($r$) | Status & Gate Outcome |
-|---|---|---|---|---|---|---|---|
-| **Synthetic Ground Truth** | 2 Hills + Urban Block + 2 Outliers | Stage 1 (Relative) | $256 \times 256$ | N/A (Unitless 0–1) | $0.2619$ | N/A | **PASSED** (100% dynamic range preserved vs 1.78% in naive min/max) |
-| **Synthetic Calibration** | Known Ground Truth ($\text{Slope}=145\text{m}, \text{Datum}=320\text{m}$) | Stage 2 (Metric) | $256 \times 256$ | $320.0\text{m} - 412.6\text{m}$ | $0.2741$ | $R^2 = 0.9916$ | **PASSED** (Slope recovered to $144.97\text{m}$, 0.02% error) |
-| **Manhattan Skyscraper Scene** (`nyc_scene.jpg`) | Dense Urban Skyscraper Canyons | Stage 1 (Relative) | $1024 \times 693$ | N/A (Unitless 0–1) | $0.2603$ | N/A | **PASSED** ($\text{std} \ge 0.10$ gate met; roof-to-street gradient sharp) |
-| **Manhattan Aerial Test 1** (`test1.png`) | High-Rise Financial District | Stage 1 (Relative) | $1259 \times 853$ | N/A (Unitless 0–1) | $0.2622$ | N/A | **PASSED** ($\text{std} \ge 0.10$ gate met; 3D extrusion confirmed) |
-| **Simulated GeoTIFF** (`test_georef.tif`) | Georeferenced Extent (EPSG:4326) | Stage 2 (Metric) | $256 \times 256$ | $320.0\text{m} - 412.6\text{m}$ | $0.2741$ | $r = 0.9948$ | **PASSED** (Preserved CRS, affine transform, nodata) |
-| **Featureless Water / Flat Desert** (Edge Case) | Calm Open Water / Salt Flat | Stage 1 (Relative) | $512 \times 512$ | N/A | $\mathbf{0.0210}$ | N/A | **CORRECTLY TRIPPED FAILURE ALERT** (`flat_warning: True`, $\text{std} < 0.05$) |
-| **Unreferenced Image in Stage 2 CLI** | Standard JPG/PNG | Stage 2 Fallback | $1024 \times 693$ | N/A | $0.2603$ | N/A | **HANDLED** (Graceful fallback to Stage 1 rDSM; zero crash) |
-| **GeoTIFF Missing SRTM Key** | GeoTIFF without API Key | Stage 2 Fallback | $256 \times 256$ | N/A | $0.2741$ | N/A | **HANDLED** (Actionable alert displayed; fallback to rDSM) |
+## 2. Height scale against independent ground truth (OpenStreetMap)
 
----
+Scale is fitted on half the OSM buildings that carry `height` or `building:levels` tags. Error is reported on the **other half**, which never touched the fit.
 
-## 2. Quantitative Deep-Dives
+| Scene | Tagged buildings used | Held out | Mean abs error | Median abs error | Pearson r |
+|---|---|---|---|---|---|
+| Lower Manhattan, 0.9 m/px | 107 | 53 | **33.5 m** | 50% | 0.49 |
 
-### A. Mathematical Calibration Parameter Recovery (Synthetic Benchmark)
-- **Target True Formula**: $\text{Elevation} = 145.00 \times \text{rDSM} + 320.00\text{ m}$
-- **Simulated Environmental Degradation**:
-  - $\sigma = 2.0\text{m}$ Gaussian sensor noise on reference DEM
-  - $9.3\%$ of scene contaminated by positive building outliers ($+25\text{m}$ to $+50\text{m}$)
+Manhattan is a worst case: 20–300 m towers, deep shadows, and visible building lean. A power-law fit (h = a·relᵇ) improved the held-out MAE only to 28.9 m, so the simpler linear fit is kept. **Takeaway:** monocular depth orders buildings well enough for triage (which blocks are tall, which roofs are low), but individual absolute heights carry roughly ±50% error. The app surfaces this number on every calibrated scene.
 
-| Metric | Ordinary Least Squares (OLS) | Stratified RANSAC (DepthWizard) | Benchmark Tolerance |
-|---|---|---|---|
-| **Recovered Slope** | $133.23\text{ m}$ (**$8.12\%$ error**) | **$144.97\text{ m}$ ($0.02\%$ error)** | $< 4.00\%$ |
-| **Recovered Datum Intercept** | $321.91\text{ m}$ ($0.60\%$ error) | **$320.03\text{ m}$ ($0.01\%$ error)** | $< 3.00\%$ |
-| **Inlier Fraction** | $100.0\%$ (Forced all outliers into fit) | **$95.3\%$** (Identified & isolated ground consensus) | $> 70\%$ |
-| **Bare-Earth Terrain RMSE** | $4.87\text{ m}$ | **$2.01\text{ m}$** (Matched sensor noise bound) | $< 3.00\text{m}$ |
-| **Building Pixels Mean Bias** | Skewed ground upward | **$+37.84\text{ m}$** (Accurately captured structural height) | Positive |
+## 3. Real scenes
 
----
+| Scene | Size | Water found | Buildings | Notes |
+|---|---|---|---|---|
+| Chennai, Adyar river | 1.2 km | 26% | 114 | River flattened to one surface; +3 m reaches 36 buildings (≈660 people) along the banks |
+| Guwahati, Brahmaputra | 1.2 km | 53% | 73 | Silty, bright river detected via the "glassy" rule; islands kept dry |
+| Lower Manhattan | 0.8 km | 0% (correct) | 146 (OSM footprints) | Shaded streets and City Hall Park correctly rejected as water |
 
-### B. Dynamic Range Preservation Under Extreme Radiometric Outliers
-Tested with $+2000.0$ rooftop specular glint and $-1000.0$ sensor dropout:
+The first version of the water detector found the Adyar but read Manhattan's shaded streets and park as water and missed the bright, silty Brahmaputra. Each failure became a rule in `detect_water` (`src/scene.py`): a DEM-position test, a shoreline test, and a "glassy" texture rule. Hole filling was also limited so river islands stay dry. Only the synthetic case is in the automated tests, because real imagery isn't committed to the repo.
 
-| Normalization Technique | Dynamic Range of True Terrain | Standard Deviation | Verdict |
-|---|---|---|---|
-| **Naive Min/Max Scaling** | **$1.78\%$** of available levels | $\text{std} = 0.0041$ | **FAILED**: Topography completely crushed |
-| **2nd/98th Percentile Clipping** | **$100.00\%$** of available levels | $\text{std} = 0.2618$ | **PASSED**: Full topographic contrast preserved |
+## 4. Speed (CPU laptop, Depth Anything V2 Small)
 
----
+| Step | Time |
+|---|---|
+| Imagery + terrain tiles, 1.2 km | about 2 s (cached afterwards) |
+| Depth inference, 1024 px | about 8–20 s |
+| OSM footprints | runs in parallel with inference; capped at 60 s, falls back to the assumed scale |
+| Asset build + analytics | under 1 s |
+| Whole map scene | 47–60 s typical, 124 s worst seen (slow OSM mirror) |
+| Flood report API (512² grid) | 23 ms |
+| Evacuation points API | 30 ms |
+| Solar estimate, ~80 sun positions with ray-marched shadows | 0.9 s |
+| Browser flood fill per slider move | 3.7 ms |
 
-### C. 16-Bit PNG vs. 8-Bit Quantization Precision
-- **16-bit Max Absolute Round-Trip Error**: **$0.00000763$** (Exact theoretical limit $\frac{0.5}{65535}$).
-- **8-bit Max Error Comparison**: $0.001961$ ($256\times$ coarser quantization).
-- **Result in Three.js**: Zero terracing or stair-stepping artifacts during 3D vertex extrusion.
+## 5. Earlier research results (CLI pipeline, `run_day1.py` / `run_day2.py`)
 
----
+These come from the original prototype and still hold for the GeoTIFF RANSAC path.
 
-### D. System Latency & Hardware Profile
-Tested on commodity hardware (Intel CPU, zero dedicated GPU):
-- **Model Checkpoint**: `Depth-Anything-V2-Small-hf` (24.8M parameters)
-- **Model Download Footprint**: ~98 MB
-- **Inference Time (512x512)**: $\sim 7.0\text{ seconds}$
-- **Inference Time (1024x693)**: $\sim 8.8\text{ seconds}$
-- **Browser Frame Rate**: Stable **60 FPS** at $512 \times 346$ resolution (~177k vertices).
+- **RANSAC vs OLS calibration** on a synthetic DEM with 9.3% building outliers: recovered slope error 0.02% (RANSAC) vs 8.12% (OLS); terrain RMSE 2.01 m vs 4.87 m.
+- **Robust normalisation:** 2nd/98th-percentile clipping keeps 100% of the terrain's dynamic range against a +2000 glint outlier, where min/max scaling keeps 1.78%.
+- **16-bit heightmaps:** 7.6e-6 maximum round-trip error vs 2.0e-3 for 8-bit, so no terracing in the mesh.

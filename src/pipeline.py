@@ -119,10 +119,13 @@ def run_upload(image_path: Path, name: str = "", gsd_m: Optional[float] = None, 
             if is_georeferenced(image_path):
                 return _run_geotiff(image_path, name, job_dir, progress)
         progress("Reading image", 0.1)
-        img = _limit_size(Image.open(image_path).convert("RGB"))
+        full = Image.open(image_path).convert("RGB")
+        img = _limit_size(full)
         rgb = np.asarray(img)
         rel = _depth(rgb, progress)
-        source = {"kind": "upload", "name": name or image_path.stem, "gsd_m": gsd_m or 0.5}
+        # gsd_m describes the pixels of the file the user gave us, not our downsampled copy.
+        gsd = (gsd_m or 0.5) * full.size[0] / img.size[0]
+        source = {"kind": "upload", "name": name or image_path.stem, "gsd_m": gsd}
         if lat is not None and lon is not None:
             source.update(lat=lat, lon=lon)
         S.prepare_inputs(job_dir, rgb, rel, source)

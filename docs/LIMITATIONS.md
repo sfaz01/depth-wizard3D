@@ -1,30 +1,18 @@
-# DepthWizard: Engineering Limitations & 15-Day Full Build Roadmap
+# Limitations
 
-**Smart India Hackathon 2026** · **Problem Statement 26175** · **ISRO**
+DepthWizard is a rapid situational-awareness tool. These are the places it is wrong, why, and what would fix each.
 
-Scientific integrity requires candidly disclosing system boundaries, theoretical assumptions, and failure modes. This document records all known limitations of the 4-day prototype and specifies the exact engineering solutions scheduled for the 15-day round.
-
----
-
-## Limitation Matrix & Roadmap Solutions
-
-| # | Prototype Limitation | Root Cause & Failure Impact | 15-Day Full Build Engineering Solution |
+| Limitation | Why | Mitigation today | Proper fix |
 |---|---|---|---|
-| **1** | **Circular Validation** | The metric DSM is validated against the exact same SRTM 30m dataset used to calibrate its linear regression. This makes quantitative metrics (RMSE, MAE) systematically optimistic regarding ground slope errors. | **Independent Spaceborne LiDAR Integration**: Validate against NASA **ICESat-2 (ATL08)** and **GEDI** photon-counting LiDAR transects that are completely withheld from the calibration regression. |
-| **2** | **DSM vs. DEM Datum Mismatch** | SRTM is a bare-earth Digital Elevation Model (DEM). DepthWizard produces a Digital Surface Model (DSM) that includes building rooftops and canopy tops. In built-up urban centers, our validation shows a systematic $+20\text{m}$ to $+50\text{m}$ positive bias against SRTM. | **Automated Ground/Canopy Segmentation**: Introduce a lightweight semantic segmentation head (e.g. SegFormer trained on LandCover.ai) to generate a binary ground mask. Calibrate the ground plane exclusively on bare ground pixels, and calculate structure heights as differential offsets ($\text{Height} = \text{DSM} - \text{DEM}$). |
-| **3** | **Foundation Model Domain Gap** | Depth Anything V2 was trained primarily on egocentric, terrestrial photography (horizontal horizon, perspective vanishing points) rather than orthorectified nadir satellite views. On flat scenes lacking perspective cues, the model can output low variance ($\text{std} < 0.05$). | **Remote Sensing LoRA Fine-Tuning**: Apply Low-Rank Adaptation (LoRA) on the ViT backbone using aerial datasets with LiDAR ground truth (SpaceNet 7, DFC2019, Vaihingen/Potsdam ISPRS benchmarks) to learn Nadir shadow and texture disparity cues directly. |
-| **4** | **Off-Nadir Oblique Angle Breakdown** | The system assumes that inverse depth (disparity, $1/\text{distance}$) maps monotonically to surface elevation ($z = H - \text{distance}$). This physics assumption holds for near-nadir viewing angles ($< 15^\circ$), but breaks down for high-obliquity satellite passes ($> 30^\circ$). | **Rational Polynomial Coefficient (RPC) Ray-Tracing**: For commercial satellite imagery (WorldView, Cartosat), ingest the embedded RPC metadata, compute the sensor incidence and azimuth vectors, and perform oblique-to-nadir perspective rectification prior to inference. |
-| **5** | **Radiometric Edge Cases (Water, Canopy, Shadow)** | 1. Open water bodies exhibit specular glints and zero texture, causing noisy depth artifacts.<br>2. Uniform, featureless rainforest canopy lacks depth gradients.<br>3. Deep building shadows suffer radiometric clipping to near-zero luminance. | **Water Masking & CLAHE Shadow Boosting**: <br>1. Ingest OSM or Sentinel-2 NDWI water masks to clamp water bodies to zero relief.<br>2. Implement automated CLAHE (Contrast Limited Adaptive Histogram Equalization) on shadowed luminance regions (Debug Prompt A). |
-| **6** | **Fixed 512x512 Mesh Resolution** | Downsampling high-resolution images ($> 2000 \times 2000$) to $512 \times 512$ limits spatial resolution to preserve browser frame rates, smoothing out small structural details like parapets and HVAC units. | **Hierarchical Quadtree Level-of-Detail (LOD)**: Implement tiled 3D terrain rendering using quadtrees (similar to Cesium / Google Earth). Stream high-resolution chunks dynamically based on camera distance and frustum culling. |
-| **7** | **Single-Scene Benchmark Scope** | The prototype has been validated on synthetic benchmarks, urban Manhattan skyscrapers, and suburban scenes, but has not yet been stress-tested across desert dunes, snow-covered mountains, and agricultural terraces. | **ISRO Standard Multi-Terrain Benchmark Suite**: Build an automated benchmark harness testing 50 diverse tiles across all Indian physiographic zones (Himalayan ridges, Indo-Gangetic plains, Thar desert, Western Ghats, coastal deltas). |
-
----
-
-## Summary for Evaluators
-
-A system that claims $100\%$ accuracy from single-view optical imagery without LiDAR or stereo pairs is scientifically implausible. 
-
-DepthWizard succeeds by:
-1. Being mathematically honest about what monocular vision can extract (relative shape).
-2. Using robust statistical filtering (Stratified RANSAC + Top-Decile exclusion) to anchor that shape to spaceborne reference datums (SRTM).
-3. Explicitly logging alerts when variance or correlation fails, rather than silently generating plausible-looking hallucinations.
+| **Absolute building heights carry about ±50% error** (worse on skyscrapers) | A monocular model is trained on ground-level photos, not nadir imagery, and has no metric scale | OSM-tag calibration with a reported hold-out error; one-click "match this height" calibration; numbers labelled "assumed" when uncalibrated | Fine-tune on nadir imagery with LiDAR truth (e.g. ISPRS Potsdam, DFC2019); use stereo pairs where available |
+| **Trees are sometimes counted as buildings** | Canopy is elevated and has soft edges, like blurred roofs; satellite shadows are green-tinted, so a simple greenness test fails | OSM footprints replace our segmentation wherever the area is mapped | A land-cover segmentation head (e.g. SegFormer on LoveDA), or NIR/NDVI when the imagery has it |
+| **Elevated roads and bridges read as buildings** | Same height signature as a long, thin building | Visible in the 3D view; they rarely change flood counts | Filter by shape (aspect ratio) or OSM `bridge=yes` |
+| **Flood model is static ("bathtub with connectivity")** | No flow velocity, rainfall timing, drainage or infiltration | Connectivity from a chosen source, which beats plain thresholding; four source types | Couple to a 2D shallow-water solver (e.g. LISFLOOD-FP style) on the same DSM |
+| **Terrain under the city comes from SRTM (30 m)** | It's the best free global DEM; its vertical error is several metres | Median filtering; rivers flattened; the gauge zero is the actual water surface | Use national DEMs where available (e.g. CartoDEM in India, 3DEP in the US) |
+| **Water detection uses RGB heuristics** | Web imagery has no infrared band | Five cues plus three real-scene regression rules; tested | OSM water polygons, or NDWI from Sentinel-2 |
+| **Occupancy is a planning estimate** | 40 m² of floor area per person and 3.2 m floors, applied uniformly | Assumptions printed next to every number | Census / WorldPop rasters |
+| **Solar is a clear-sky model with one cloud derate** | No local weather data | Shadows are real (ray-marched through the DSM); assumptions shown | NASA POWER or PVGIS irradiance for the location |
+| **Off-nadir imagery** | Building lean breaks the disparity-to-height assumption | Esri imagery is mostly near-nadir orthophotos | RPC-based rectification for raw satellite scenes |
+| **Scenes up to about 4 km across** | Browser mesh is 512 × 512; the tile budget is capped | Pick a smaller area for more detail | Tiled level-of-detail streaming |
+| **Android WebXR AR needs HTTPS** | Browser security rules | iOS Quick Look and the 3D viewer work over LAN HTTP; use a free tunnel for Android AR | Serve over HTTPS by default |
+| **The server is open on the LAN while running** | It binds to `0.0.0.0` so phones can reach it | Upload size limit, filename sanitising, id/asset whitelists | Set `DW_HOST=127.0.0.1` when phone access isn't needed; add auth before any public deployment |

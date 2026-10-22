@@ -5,19 +5,6 @@ import { api } from './api.js';
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
-// Flood-prone and planning-relevant places, each checked against the imagery.
-const PRESETS = [
-  { name: 'Srinagar, Jhelum', note: '2014 floods', lat: 34.0700, lon: 74.8100, size: 1200 },
-  { name: 'Guwahati, Brahmaputra', note: 'monsoon floods', lat: 26.1920, lon: 91.7470, size: 1200 },
-  { name: 'Patna, Ganga', note: 'riverfront', lat: 25.6200, lon: 85.1500, size: 1200 },
-  { name: 'Chennai, Adyar', note: '2015 floods', lat: 13.0140, lon: 80.2520, size: 1200 },
-  { name: 'Mumbai, Mithi river', note: 'waterlogging', lat: 19.0660, lon: 72.8720, size: 1200 },
-  { name: 'Kochi', note: 'backwaters', lat: 9.9700, lon: 76.2800, size: 1200 },
-  { name: 'Shimla', note: 'landslide slopes', lat: 31.1048, lon: 77.1734, size: 800 },
-  { name: 'Venice', note: 'acqua alta', lat: 45.4340, lon: 12.3380, size: 800 },
-  { name: 'Lower Manhattan', note: 'skyline', lat: 40.7070, lon: -74.0120, size: 800 },
-];
-
 const EARTH = 40075016.686;
 
 export class NewSceneDialog {
@@ -36,12 +23,17 @@ export class NewSceneDialog {
     $('#btn-build-map').addEventListener('click', () => this.buildMap());
     $('#place-search').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); this.search(); } });
 
-    $('#presets').innerHTML = PRESETS.map((p, i) =>
-      `<button data-i="${i}"><b>${p.name}</b>, ${p.note}</button>`).join('');
+    // Flood-prone and planning-relevant places, shared with the dw.py pre-bake CLI.
+    this.presets = [];
+    fetch('presets.json').then(r => r.json()).then(list => {
+      this.presets = list;
+      $('#presets').innerHTML = list.map((p, i) =>
+        `<button data-i="${i}"><b>${p.name}</b>, ${p.note}</button>`).join('');
+    }).catch(() => { /* presets are optional */ });
     $('#presets').addEventListener('click', (e) => {
       const b = e.target.closest('button[data-i]');
       if (!b) return;
-      const p = PRESETS[+b.dataset.i];
+      const p = this.presets[+b.dataset.i];
       this.placeName = p.name;
       $('#area-size').value = String(p.size);
       this.fitArea(p.lat, p.lon);

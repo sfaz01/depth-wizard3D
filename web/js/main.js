@@ -519,7 +519,7 @@ async function ask(message) {
 }
 
 function updateInsets() {
-  if (window.innerWidth <= 820) { viewer.setInsets(0, 0); return; }
+  if (isMobile()) { viewer.setInsets(0, 0); return; }
   const drawerOpen = !$('#drawer').classList.contains('closed');
   const left = drawerOpen ? $('#drawer').getBoundingClientRect().right : $('#rail').getBoundingClientRect().right;
   const right = $('#copilot').hidden ? 0 : window.innerWidth - $('#copilot').getBoundingClientRect().left;
@@ -529,7 +529,6 @@ function updateInsets() {
 function switchTab(name) {
   $$('.rail-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
   $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  $('#drawer').classList.add('mobile-open');
   $('#gauge').hidden = !(name === 'flood' || state.level != null);
   updateInsets();
 }
@@ -614,6 +613,7 @@ function bind() {
   $$('.rail-btn').forEach(b => b.addEventListener('click', () => {
     const already = b.classList.contains('active') && !$('#drawer').classList.contains('closed');
     $('#drawer').classList.toggle('closed', already);
+    if (isMobile() && !already && !$('#copilot').hidden) $('#btn-copilot-min').click();
     switchTab(b.dataset.tab);
     updateInsets();
   }));
@@ -689,6 +689,7 @@ function bind() {
     updateInsets();
   });
   $('#copilot-tab').addEventListener('click', () => {
+    if (isMobile()) $('#drawer').classList.add('closed');
     $('#copilot').hidden = false;
     $('#copilot-tab').hidden = true;
     document.documentElement.style.removeProperty('--copilot');
@@ -747,9 +748,16 @@ function bind() {
   });
 }
 
+const isMobile = () => window.innerWidth <= 820;
+
 async function boot() {
   bind();
   switchTab('overview');
+  if (isMobile()) {
+    // Start with the 3D view unobstructed; panels open on demand.
+    $('#drawer').classList.add('closed');
+    $('#btn-copilot-min').click();
+  }
   const wanted = new URLSearchParams(location.search).get('scene');
   try {
     await loadScene(wanted || 'latest');
