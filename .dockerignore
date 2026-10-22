@@ -1,0 +1,7 @@
+.git
+.venv
+__pycache__
+data/web_jobs
+data/cache
+data/output
+*.pyc

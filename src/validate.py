@@ -126,7 +126,7 @@ def save_error_map(
     if not np.all(valid_mask):
         rgb_uint8[~valid_mask] = [40, 40, 40]
 
-    img = Image.fromarray(rgb_uint8, mode="RGB")
+    img = Image.fromarray(rgb_uint8)
     img.save(out_path)
     return out_path
 

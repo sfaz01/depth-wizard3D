@@ -29,7 +29,6 @@ from pathlib import Path
 from typing import Optional, Tuple, Union
 import numpy as np
 from PIL import Image
-import torch
 
 
 @dataclass
@@ -126,6 +125,8 @@ class DepthEstimator:
         """Auto-detect available compute device: cuda > mps > cpu."""
         if requested and requested.lower() != "auto":
             return requested.lower()
+        import torch  # imported lazily so analytics/tests run without PyTorch installed
+
         if torch.cuda.is_available():
             return "cuda"
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -162,6 +163,7 @@ class DepthEstimator:
             DepthResult containing normalized relative height and raw disparity.
         """
         self._load_model()
+        import torch
 
         # Load & standardize image to RGB PIL Image
         if isinstance(image_input, (str, Path)):
@@ -175,7 +177,7 @@ class DepthEstimator:
                 uint8_img = np.stack([uint8_img] * 3, axis=-1)
             elif uint8_img.shape[2] == 4:
                 uint8_img = uint8_img[:, :, :3]
-            pil_image = Image.fromarray(uint8_img, mode="RGB")
+            pil_image = Image.fromarray(uint8_img)
         elif isinstance(image_input, Image.Image):
             pil_image = image_input.convert("RGB")
         else:

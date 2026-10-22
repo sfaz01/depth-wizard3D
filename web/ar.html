@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DepthWizard AR</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600;700&family=Barlow+Condensed:wght@600&display=swap" rel="stylesheet">
+  <script type="module" src="https://unpkg.com/@google/model-viewer@3.4.0/dist/model-viewer.min.js"></script>
+  <style>
+    :root { --ink: #0f1b2d; --line: #2a3d57; --text: #e8eef5; --muted: #93a4ba; --signal: #ffb000; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--ink); color: var(--text); font: 400 15px/1.45 "Barlow", system-ui, sans-serif; }
+    body { display: flex; flex-direction: column; }
+    header { padding: 14px 16px 10px; }
+    h1 { margin: 0; font-size: 20px; font-weight: 700; }
+    p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+    model-viewer { flex: 1; width: 100%; background: radial-gradient(circle at 50% 40%, #1d3150, var(--ink)); --poster-color: transparent; }
+    .ar-btn { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--signal); color: #1a1200; border: 0; border-radius: 8px; padding: 12px 22px; font: 700 16px "Barlow", sans-serif; }
+    .stats { display: flex; gap: 18px; padding: 10px 16px 16px; border-top: 1px solid var(--line); }
+    .stats div { display: flex; flex-direction: column-reverse; }
+    .stats dd { margin: 0; font: 600 22px "Barlow Condensed", sans-serif; }
+    .stats dt { color: var(--muted); font-size: 12.5px; }
+    .err { padding: 24px 16px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="name">Loading scene…</h1>
+    <p>Drag to orbit. Tap the button to place it on a table.</p>
+  </header>
+  <model-viewer id="mv" camera-controls touch-action="pan-y" auto-rotate shadow-intensity="1" exposure="1.1"
+                ar ar-modes="webxr scene-viewer quick-look" ar-scale="auto" alt="3D city model">
+    <button slot="ar-button" class="ar-btn">View on your table</button>
+  </model-viewer>
+  <dl class="stats" id="stats"></dl>
+  <script type="module">
+    const id = new URLSearchParams(location.search).get('scene') || 'latest';
+    const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    try {
+      const res = await fetch(`/api/result/${encodeURIComponent(id)}`);
+      if (!res.ok) throw new Error('Scene not found');
+      const r = await res.json();
+      document.getElementById('name').textContent = r.manifest.scene?.name || r.job_id;
+      document.title = `${r.manifest.scene?.name || 'Scene'} in AR`;
+      document.getElementById('mv').src = `/api/jobs/${r.job_id}/model.glb?exaggeration=1.8`;
+      const b = r.analysis?.buildings || {};
+      document.getElementById('stats').innerHTML = `
+        <div><dd>${esc(b.count ?? 0)}</dd><dt>Buildings</dt></div>
+        <div><dd>${esc(Math.round(b.tallest_m ?? 0))} m</dd><dt>Tallest</dt></div>
+        <div><dd>≈${esc((b.est_occupants ?? 0).toLocaleString())}</dd><dt>Occupants</dt></div>`;
+    } catch (e) {
+      document.querySelector('header').innerHTML = `<h1>Could not open this scene</h1><p class="err">${esc(e.message)}. Check the phone is on the same Wi-Fi as the laptop.</p>`;
+      document.getElementById('mv').remove();
+    }
+  </script>
+</body>
+</html>

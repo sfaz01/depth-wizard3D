@@ -5,3 +5,10 @@ __pycache__/
 *.pyd
 .env
 .DS_Store
+.pytest_cache/
+
+# Generated at runtime
+data/web_jobs/
+data/output/
+data/cache/
+data/srtm/

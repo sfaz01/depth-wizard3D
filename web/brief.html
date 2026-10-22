@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Impact brief</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
+  <style>
+    :root { --ink: #0f1b2d; --muted: #5b6b80; --line: #d5dce5; --signal: #ffb000; --water: #1f7fb5;
+            --minor: #c9a800; --moderate: #e07f00; --severe: #d2421c; --critical: #9c1452; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #e9edf2; color: var(--ink); font: 400 14px/1.5 "Barlow", system-ui, sans-serif; }
+    .page { width: min(210mm, 100%); margin: 24px auto; background: #fff; padding: 18mm 16mm; box-shadow: 0 4px 24px rgba(15, 27, 45, 0.12); }
+    header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; border-bottom: 4px solid var(--ink); padding-bottom: 10px; }
+    h1 { margin: 0; font-size: 28px; line-height: 1.1; }
+    h2 { font-size: 16px; margin: 22px 0 8px; }
+    .sub { color: var(--muted); margin-top: 4px; }
+    .tag { border: 2px solid var(--ink); padding: 3px 9px; font-weight: 700; white-space: nowrap; }
+    img.shot { width: 100%; margin-top: 14px; display: block; border: 1px solid var(--line); }
+    .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; margin-top: 14px; border: 1px solid var(--line); }
+    .kpis div { padding: 10px 12px; border-right: 1px solid var(--line); display: flex; flex-direction: column-reverse; }
+    .kpis div:last-child { border-right: 0; }
+    .kpis dd { margin: 0; font: 700 28px/1.05 "Barlow Condensed", sans-serif; }
+    .kpis dt { color: var(--muted); font-size: 12.5px; }
+    dl { margin: 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; color: var(--muted); font-weight: 600; border-bottom: 2px solid var(--ink); padding: 4px 6px; }
+    td { border-bottom: 1px solid var(--line); padding: 4px 6px; font-variant-numeric: tabular-nums; }
+    td.n, th.n { text-align: right; }
+    .sev { display: inline-block; width: 10px; height: 10px; margin-right: 6px; vertical-align: -1px; }
+    .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .fine { color: var(--muted); font-size: 12px; margin-top: 18px; border-top: 1px solid var(--line); padding-top: 8px; }
+    .actions { text-align: center; margin: 16px; }
+    .actions button { font: 600 15px "Barlow", sans-serif; background: var(--signal); border: 0; padding: 10px 20px; border-radius: 6px; cursor: pointer; }
+    @media print { body { background: #fff; } .page { margin: 0; box-shadow: none; width: auto; padding: 0; } .actions { display: none; } }
+    @media (max-width: 640px) { .kpis { grid-template-columns: 1fr 1fr; } .cols { grid-template-columns: 1fr; } .page { padding: 18px; } }
+  </style>
+</head>
+<body>
+  <div class="actions"><button onclick="print()">Print or save as PDF</button></div>
+  <main class="page" id="page"><p>Preparing brief…</p></main>
+  <script type="module">
+    const q = new URLSearchParams(location.search);
+    const id = q.get('scene');
+    const level = q.get('level') ? parseFloat(q.get('level')) : null;
+    const source = q.get('source') || 'lowest';
+    const point = q.get('point') ? q.get('point').split(',').map(Number) : null;
+    const fmt = (v, d = 0) => Number(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+    const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+    const sourceNames = { lowest: 'river overtopping', edges: 'storm surge from all edges', rain: 'cloudburst ponding', point: 'embankment breach' };
+
+    const r = await fetch(`/api/result/${encodeURIComponent(id)}`).then(x => x.json());
+    const m = r.manifest, a = r.analysis || {}, b = a.buildings || {};
+    let flood = null, zones = [];
+    if (level != null) {
+      const body = { level_m: level, source };
+      if (source === 'point' && point) body.point = point;
+      [flood, { zones }] = await Promise.all([post(`/api/jobs/${r.job_id}/flood`, body), post(`/api/jobs/${r.job_id}/safe_zones`, body)]);
+    }
+    let shot = null;
+    try { shot = sessionStorage.getItem('dw-brief-shot'); } catch (_) { /* blocked */ }
+    const sc = m.scene || {};
+    const datum = a.flood_datum_m ?? a.ground_min_m ?? 0;
+    const datumName = a.water_level_m != null ? 'normal water level' : 'the lowest ground';
+    const rise = flood ? flood.level_m - datum : null;
+    const scale = m.scale || {};
+    const accuracy = scale.method === 'osm'
+      ? `Heights calibrated against ${scale.osm.n_buildings} OpenStreetMap buildings; independent check on ${scale.osm.holdout.n} held-out buildings: mean error ±${fmt(scale.osm.holdout.mae_m, 1)} m.`
+      : scale.method === 'ground_truth' ? 'Synthetic demonstration scene with exact heights.'
+      : 'Heights use an assumed scale and are indicative only until calibrated.';
+    document.title = `Impact brief - ${sc.name || r.job_id}`;
+
+    document.getElementById('page').innerHTML = `
+      <header>
+        <div>
+          <h1>${flood ? 'Flood impact brief' : 'Scene brief'}: ${esc(sc.name || r.job_id)}</h1>
+          <p class="sub">${sc.lat != null ? `${fmt(sc.lat, 4)}, ${fmt(sc.lon, 4)}. ` : ''}${fmt(m.width * m.gsd_m)} × ${fmt(m.height * m.gsd_m)} m area. Generated ${new Date().toLocaleString()}.</p>
+        </div>
+        <span class="tag">${flood ? `Water +${fmt(rise, 1)} m` : 'Baseline'}</span>
+      </header>
+      ${shot ? `<img class="shot" src="${shot}" alt="3D view of the scene">` : ''}
+      <dl class="kpis">
+        ${flood ? `
+          <div><dd>${fmt(flood.flooded_area_m2 / 10000, 2)} ha</dd><dt>Under water (${fmt(flood.flooded_fraction * 100, 1)}%)</dt></div>
+          <div><dd>${fmt(flood.buildings_affected)}</dd><dt>Buildings reached</dt></div>
+          <div><dd>≈${fmt(flood.est_people_affected)}</dd><dt>People on flooded floors</dt></div>
+          <div><dd>${fmt(flood.max_depth_m, 1)} m</dd><dt>Deepest water</dt></div>` : `
+          <div><dd>${fmt(b.count)}</dd><dt>Buildings</dt></div>
+          <div><dd>${fmt(b.tallest_m)} m</dd><dt>Tallest</dt></div>
+          <div><dd>≈${fmt(b.est_occupants)}</dd><dt>Estimated occupants</dt></div>
+          <div><dd>${fmt((a.terrain?.hazard_gt30 || 0) * 100, 1)}%</dd><dt>Terrain steeper than 30°</dt></div>`}
+      </dl>
+      ${flood ? `
+        <p>Scenario: ${sourceNames[source] || source}, water surface at ${fmt(flood.level_m, 1)} m elevation (${fmt(rise, 1)} m above ${datumName}).
+        Buildings by severity: ${flood.severity_counts.critical} critical (over 2.5 m), ${flood.severity_counts.severe} severe, ${flood.severity_counts.moderate} moderate, ${flood.severity_counts.minor} minor.</p>
+        <div class="cols">
+          <section>
+            <h2>Worst-hit buildings</h2>
+            <table><thead><tr><th>Building</th><th class="n">Water at door</th><th class="n">Floors under</th><th class="n">People</th></tr></thead>
+            <tbody>${flood.affected.slice(0, 14).map(x => `<tr><td><span class="sev" style="background:var(--${x.severity})"></span>${x.id}</td><td class="n">${fmt(x.water_depth_m, 1)} m</td><td class="n">${x.floors_underwater}</td><td class="n">${fmt(x.est_people)}</td></tr>`).join('') || '<tr><td colspan="4">None</td></tr>'}</tbody></table>
+          </section>
+          <section>
+            <h2>Evacuation points</h2>
+            <table><thead><tr><th>Point</th><th class="n">Size</th><th class="n">Above water</th></tr></thead>
+            <tbody>${zones.map((z, i) => `<tr><td>${z.kind === 'vertical_refuge' ? `Refuge ${i + 1}, roof of building ${z.building_id}` : `Assembly ${i + 1}, open ground`}</td><td class="n">${fmt(z.area_m2)} m²</td><td class="n">+${fmt(z.freeboard_m, 1)} m</td></tr>`).join('') || '<tr><td colspan="3">No dry open ground; use rooftops.</td></tr>'}</tbody></table>
+          </section>
+        </div>` : ''}
+      <p class="fine">Produced by DepthWizard from a single overhead image. ${esc(accuracy)}
+        Building heights come from monocular depth estimation; occupancy assumes 40 m² of floor area per person and 3.2 m per floor.
+        Use for rapid situational awareness and planning, not as a substitute for surveyed data.
+        ${sc.attribution ? esc(sc.attribution) : ''}</p>`;
+  </script>
+</body>
+</html>

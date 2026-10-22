@@ -1,197 +1,148 @@
 # DepthWizard
 
-> **Smart India Hackathon 2026** · **Problem Statement 26175** · **Organization: ISRO**  
-> **Single-View Height Estimation and Real-Time 3D Browser Flythrough**
+**Turn one overhead image into a measurable 3D twin of a neighbourhood. Then raise the river, see which buildings flood, find where people should go, and plan rooftop solar, all in the browser.**
 
-[![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Three.js](https://img.shields.io/badge/Frontend-Three.js-black.svg?logo=three.js&logoColor=white)](https://threejs.org)
-[![Depth Anything V2](https://img.shields.io/badge/AI_Backbone-Depth_Anything_V2-blueviolet.svg)](https://github.com/DepthAnything/Depth-Anything-V2)
-[![SRTM 30m](https://img.shields.io/badge/Datum-SRTM_30m_GL1-orange.svg)](https://opentopography.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Flood simulation in the River Town demo scene](docs/img/flood.jpg)
 
----
+Disaster teams and city planners rarely have LiDAR or stereo imagery for the place they need right now. They usually have a satellite or drone picture. DepthWizard reconstructs the 3D surface from that single image with a monocular depth model. It anchors the surface to real terrain and real building heights from free open data, then runs the analyses that decide things:
 
-## What is DepthWizard?
+| Question | What DepthWizard does |
+|---|---|
+| *If the river rises 3 m, who is affected?* | Hydraulically connected flood fill from the river (not a naive "everything below X" threshold). It reports flooded area, buildings reached, water depth at each door, severity and people on flooded floors. |
+| *Where should people go?* | Ranks dry open ground and tall rooftops by freeboard above the water and marks them in 3D. |
+| *What if an embankment breaks here, or a cloudburst hits?* | Four water sources: river, storm surge from every edge, cloudburst ponding, or a breach point you click. |
+| *Which slopes are dangerous?* | Slope classes on the bare-earth model (under 15°, 15–30°, over 30°). |
+| *How much rooftop solar does this block have?* | Shadow-aware annual yield per roof, ray-marched through the reconstructed city, so a tower shading its neighbour counts. |
+| *Can I just ask?* | A copilot turns "flood the area by 3 m and show evacuation points" into actions. A free local LLM picks the actions; every number comes from the analytics code, so it can't hallucinate a head count. |
 
-DepthWizard is a monocular terrain reconstruction pipeline that turns a **single RGB satellite or aerial image** into a navigable 3D representation, without requiring stereo imagery or LiDAR.
+Results leave the app as a printable **impact brief**, a **GLB model you can open in AR on a phone** (scan the QR code), a **3D-printable STL**, or **GeoJSON** for GIS tools.
 
-The system combines monocular depth estimation, satellite elevation data, and browser-based 3D rendering into a single workflow:
-
-1. **Relative depth estimation**  
-   Depth Anything V2 is used to estimate a relative Digital Surface Model (rDSM) from the input image. The depth output is normalized using robust 2nd and 98th percentile clipping to reduce the effect of extreme values.
-
-2. **Metric elevation calibration**  
-   For georeferenced GeoTIFF inputs, relative depth is converted into metric elevations using a stratified RANSAC regression model. The calibration is anchored against SRTM 30m elevation data retrieved through OpenTopography.
-
-3. **Interactive 3D visualization**  
-   The resulting terrain is rendered directly in the browser using Three.js. The viewer supports orbit controls, WASD flythrough, dynamic sun lighting, vertical exaggeration, and real-time elevation readouts.
-
-4. **Browser-based workflow**  
-   There is no requirement for Unity, a desktop GIS application, or a frontend build system. The viewer runs directly in a WebGL2-compatible browser, while processing is handled by the FastAPI backend.
+<p>
+<img src="docs/img/buildings.jpg" width="49%" alt="Building analytics">
+<img src="docs/img/brief.jpg" width="49%" alt="Printable impact brief">
+</p>
 
 ---
 
 ## Quickstart
 
-### 1. Start the server
-
-From the project directory:
-
-```powershell
-.\.venv\Scripts\python.exe -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+### Windows
+```bat
+setup_laptop.bat     :: one time; installs CUDA PyTorch automatically if an NVIDIA GPU is present
+start_server.bat     :: opens http://localhost:8000
 ```
 
-### 2. Open the viewer
-
-Open:
-
-```text
-http://localhost:8000
+### Linux / macOS
+```bash
+./setup.sh && ./start.sh
 ```
 
-The browser interface provides the complete visualization and image-processing workflow.
+### Docker / Hugging Face Spaces
+```bash
+docker build -t depthwizard . && docker run -p 7860:7860 depthwizard
+```
+The image is CPU-only and listens on port 7860, the Hugging Face Spaces Docker default.
 
----
+The app opens on an offline demo scene, a synthetic river town with exact heights, so it works with no internet and no model download. Click **New scene** to:
+- **Pick on map:** search a place or choose a preset (Srinagar, Guwahati, Patna, Chennai, Mumbai, Kochi, Shimla and more), then **Build 3D twin**. The satellite imagery, terrain and OpenStreetMap buildings are fetched automatically, all free with no API keys.
+- **Upload image:** a drone photo, a satellite screenshot or a GeoTIFF. GeoTIFFs are placed on the map automatically.
 
-## Demo Flow
-
-A short demonstration can be structured around the following workflow:
-
-| Time | Action | What to demonstrate |
+### Hardware
+| Setup | Model | Time per 1.2 km scene |
 |---|---|---|
-| **0:00 - 0:15** | Open the viewer | Show a single RGB satellite image reconstructed as a 3D terrain mesh. Explain that the geometry is generated from monocular depth rather than stereo or LiDAR data. |
-| **0:15 - 0:30** | Adjust Sun Azimuth and Vertical Exaggeration | Demonstrate the dynamic lighting and the ability to exaggerate terrain features for easier visual interpretation. |
-| **0:30 - 0:45** | Enable Flythrough Mode | Use WASD controls to navigate through the generated environment. Hover over the terrain to demonstrate the real-time elevation readout. |
-| **0:45 - 1:00** | Upload another image | Demonstrate the processing pipeline by dropping a new image into the viewer and showing the resulting 3D reconstruction. |
+| CPU laptop | `DW_MODEL_SIZE=small` (default) | about 60 s, mostly downloads; depth takes about 10–20 s |
+| 6 GB NVIDIA GPU | `DW_MODEL_SIZE=base` (set automatically by the start scripts; the Base weights are CC-BY-NC, which is fine for hackathons and research) | a few seconds of inference |
 
----
-
-## Requirements vs. Current Implementation
-
-The following table maps the current prototype against the main requirements of ISRO Problem Statement 26175 and the planned full implementation.
-
-| Requirement | Current Prototype | Planned Full Build |
-|---|---|---|
-| **Single-View Height Estimation** | Depth Anything V2 monocular depth estimation with 2nd/98th percentile normalization. | Multi-scale tiled inference, CLAHE-based shadow enhancement, and LoRA fine-tuning on relevant datasets. |
-| **Absolute Metric Elevation** | Stratified RANSAC regression calibrated against SRTM 30m data through OpenTopography. | Additional validation using NASA ICESat-2 ATL08 spaceborne LiDAR transects. |
-| **Non-Georeferenced Input** | PNG/JPG inputs are processed into a unitless relative rDSM. | Automatic GSD estimation using image and building-footprint priors. |
-| **Georeferenced GeoTIFF Input** | Rasterio-based ingestion, CRS validation, reprojection, and DSM GeoTIFF export. | Multispectral support and integration with additional satellite products and RPC-based rectification. |
-| **3D Terrain Visualization** | Browser-based Three.js viewer with orbit controls, WASD navigation, dynamic lighting, and elevation HUD. | Quadtree-based Level of Detail for larger regional datasets. |
-| **Zero Client Installation** | Frontend runs directly in a WebGL2-compatible browser using CDN imports. | PWA support, offline caching, and WebGPU acceleration. |
-
----
-
-## CLI Pipeline
-
-DepthWizard can also be used without the browser interface.
-
-### Stage 1: Relative Depth Extraction
-
-Process an individual image or a directory of images:
-
-```powershell
-.\.venv\Scripts\python.exe run_day1.py data/input/ --outdir data/output/
+### Free AI copilot (optional)
+The copilot always works with its built-in offline parser for the suggested prompts. For free-form questions, run a local model with [Ollama](https://ollama.com):
+```bash
+ollama pull qwen2.5:3b        # about 2 GB; fits next to the depth model on a 6 GB GPU
+```
+Any OpenAI-compatible endpoint works too, including free hosted tiers:
+```bash
+DW_LLM_BASE_URL=https://api.groq.com/openai/v1  DW_LLM_API_KEY=...  DW_LLM_MODEL=llama-3.1-8b-instant
 ```
 
-The pipeline generates:
-
-```text
-{stem}_raw.npy
-{stem}_heightmap.png
-{stem}_turbo.png
-{stem}_compare.png
+### Phone AR
+The Export tab shows a QR code for the laptop's LAN address. A phone on the same Wi-Fi opens an interactive 3D model, and iOS Quick Look AR works over plain HTTP. Android's WebXR and Scene Viewer need HTTPS, so for a stage demo run a free tunnel and tell DepthWizard its public URL:
+```bash
+cloudflared tunnel --url http://localhost:8000      # prints https://<name>.trycloudflare.com
+DW_PUBLIC_URL=https://<name>.trycloudflare.com ./start.sh
 ```
 
-The heightmap is stored as a 16-bit PNG to preserve more depth information than a standard 8-bit representation.
-
-### Stage 2: Metric Calibration
-
-For georeferenced GeoTIFF processing, configure an OpenTopography API key:
-
-```powershell
-$env:OPENTOPO_API_KEY = "your_key_here"
-```
-
-Then run:
-
-```powershell
-.\.venv\Scripts\python.exe run_day2.py data/input/your_scene.tif --outdir data/output/
-```
-
-The pipeline generates:
-
-```text
-{stem}_dsm.tif
-{stem}_dsm.npy
-{stem}_error_map.png
-{stem}_validation.json
-```
-
-The `_dsm.tif` output contains the calibrated metric elevation model.
-
----
-
-## Automated Tests
-
-The repository includes synthetic tests covering the main processing stages and mathematical components.
-
-### Stage 1
-
-Tests percentile-based normalization and 16-bit heightmap generation:
-
-```powershell
-.\.venv\Scripts\python.exe tests\test_stage1_synthetic.py
-```
-
-### Stage 2
-
-Tests RANSAC parameter recovery, including slope and intercept estimation:
-
-```powershell
-.\.venv\Scripts\python.exe tests\test_stage2_synthetic.py
-```
-
-### Stage 3
-
-Tests Web 3D asset generation, downsampling, and FastAPI endpoints:
-
-```powershell
-.\.venv\Scripts\python.exe tests\test_stage3_export.py
+### Pre-bake scenes before a demo
+Venue Wi-Fi is unreliable, so build scenes ahead of time. They appear under **Recent scenes**:
+```bash
+python dw.py presets                                   # every preset place
+python dw.py map --lat 26.192 --lon 91.747 --size 1200 --name "Guwahati"
+python dw.py image drone.jpg --gsd 0.3
 ```
 
 ---
 
-## Technical Documentation
+## How it works
 
-Additional technical details are available in the `docs/` directory:
+```
+ satellite tiles ──┐                        ┌── OpenStreetMap footprints + height tags
+ or uploaded image │                        │   (fetched in parallel with inference)
+                   ▼                        ▼
+        Depth Anything V2 ──► split: terrain tilt │ structures ──► metric DSM ──► analytics
+                                  (morphological opening)          ▲             ground, buildings,
+ AWS Terrain Tiles (SRTM) ─────────────────────────────────────────┘             water, flood, solar
+ permanent-water detection (RGB + depth + DEM) flattens rivers ────┘
+```
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)  
-  System architecture, processing pipeline, and design decisions, including the reasoning behind Depth Anything V2, RANSAC, and Three.js.
+1. **Depth.** Depth Anything V2 predicts relative depth. On overhead images it outlines buildings well but invents a perspective tilt. A large-window morphological opening separates the low-frequency tilt from the structures.
+2. **Metric terrain.** Structures sit on a real bare-earth DEM from AWS Terrain Tiles (SRTM, free, no key). A median filter removes SRTM's 30 m speckle and void pits.
+3. **Height scale.** One scale factor is fitted against OpenStreetMap buildings with `height` or `building:levels` tags. **Half the buildings are held out** and the app reports the error on those, so validation is independent, not circular. Without OSM coverage you can calibrate by typing the real height of any one building.
+4. **Water.** Rivers and lakes are detected from colour, texture, depth flatness and DEM position, then flattened. They become the flood source, and SRTM is at its noisiest over water anyway.
+5. **Buildings.** OSM footprints are used when the area is mapped; otherwise watershed segmentation of the normalised DSM. Each building gets a height (90th percentile), floors, footprint, volume and estimated occupants.
+6. **Analytics.** The same Python functions serve the REST API, the copilot and the printed brief. The browser re-implements only the flood fill, so water follows the slider at 60 fps, and a test checks the two match cell for cell.
 
-- [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md)  
-  Known limitations and current system boundaries, including the distinction between DEM and DSM data and the limitations of the current validation approach.
+Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Measured accuracy: [docs/RESULTS.md](docs/RESULTS.md). What it can't do: [docs/LIMITATIONS.md](docs/LIMITATIONS.md). Demo script for judges: [docs/PITCH.md](docs/PITCH.md).
 
-- [`docs/RESULTS.md`](docs/RESULTS.md)  
-  Validation results across different test images, including selected failure cases and error measurements.
+## Honest accuracy
+Monocular depth ranks heights well, but its absolute heights are rough. On Lower Manhattan, fitted against 107 OSM-tagged buildings and checked on the 53 held out, the mean height error was **±33.5 m** (median 50%; r = 0.49). Skyscrapers are the hardest case. The app shows this number next to every calibrated scene and labels uncalibrated scenes "Assumed scale". Treat outputs as rapid situational awareness, not survey data.
 
----
-
-## Project Stack
-
-| Component | Technology |
+## API
+| Endpoint | Purpose |
 |---|---|
-| Backend | FastAPI |
-| Depth Estimation | Depth Anything V2 |
-| Raster Processing | Rasterio |
-| Elevation Reference | SRTM 30m / OpenTopography |
-| 3D Rendering | Three.js |
-| Browser Graphics | WebGL2 |
-| Language | Python / JavaScript |
+| `POST /api/scene/map` `{west,south,east,north,name}` | Build a scene for a map area (background job) |
+| `POST /api/process` (multipart: `file`, `gsd_m`, `lat`, `lon`, `name`) | Build from an uploaded image or GeoTIFF |
+| `GET /api/jobs/{id}` | Live job progress |
+| `GET /api/result/{id}` | Manifest, analysis, buildings and asset URLs |
+| `POST /api/jobs/{id}/flood` `{level_m, source, point?}` | Flood impact report |
+| `POST /api/jobs/{id}/safe_zones` | Evacuation points |
+| `GET /api/jobs/{id}/solar` | Rooftop solar estimate (cached) |
+| `POST /api/jobs/{id}/copilot` `{message, state}` | Natural-language control |
+| `POST /api/jobs/{id}/scale` | Recalibrate heights and rebuild |
+| `GET /api/jobs/{id}/model.glb`, `model.stl`, `buildings.geojson` | Exports |
 
----
+## Tests
+```bash
+pip install -r requirements.txt   # PyTorch is not needed for the test suite
+python -m pytest tests -q
+```
+The suite covers analytics against a synthetic town with known truth, water detection, OSM calibration recovery, watertight STL and valid GLB output, the copilot (offline rules and a mock LLM server), API security (path traversal, filename sanitising) and JS/Python flood parity through Node. It runs on every push via GitHub Actions.
 
-## Authors & Acknowledgments
+## Project layout
+```
+api/main.py          FastAPI server + static viewer
+src/pipeline.py      scene builders: map area, upload, GeoTIFF, demo
+src/scene.py         depth to metric DSM, water detection, asset export
+src/analytics.py     ground, buildings, flood, evacuation, slope, sun and solar
+src/tiles.py         Esri imagery + AWS terrain tiles
+src/osm.py           OSM footprints, height calibration with hold-out
+src/copilot.py       LLM / rule intent parsing + grounded execution
+src/exporters.py     GLB and STL writers
+web/                 index.html, ar.html, brief.html, js/ (ES modules), css/
+dw.py                command-line scene builder
+```
+`run_day1.py` and `run_day2.py` are the original research CLIs (relative depth, and SRTM RANSAC calibration for GeoTIFFs).
 
-Built for **Smart India Hackathon 2026**, Problem Statement 26175, under **ISRO**.
-
-The project uses and builds upon **Depth Anything V2, SRTMGL1, OpenTopography, Rasterio, FastAPI, and Three.js**.
+## Data and credits
+- Imagery: Esri World Imagery (Esri, Maxar, Earthstar Geographics). Check Esri's terms before any commercial use.
+- Terrain: AWS Terrain Tiles / Mapzen (SRTM, NED, ETOPO1 and others).
+- Buildings and geocoding: © OpenStreetMap contributors (ODbL), via Overpass and Nominatim.
+- Depth model: [Depth Anything V2](https://github.com/DepthAnything/Depth-Anything-V2). The Small checkpoint is Apache-2.0; check the licence of larger checkpoints before commercial use.
+- 3D: Three.js, Google model-viewer, Leaflet.
