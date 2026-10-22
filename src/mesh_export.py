@@ -137,7 +137,7 @@ def export_for_web(
             uint8_arr = np.stack([uint8_arr] * 3, axis=-1)
         elif uint8_arr.shape[2] == 4:
             uint8_arr = uint8_arr[:, :, :3]
-        pil_rgb = Image.fromarray(uint8_arr, mode="RGB")
+        pil_rgb = Image.fromarray(uint8_arr)
     elif isinstance(rgb_input, Image.Image):
         pil_rgb = rgb_input.convert("RGB")
     else:
@@ -148,7 +148,7 @@ def export_for_web(
 
     # Ensure elevation array matches RGB size before web downsampling
     if (elev_h, elev_w) != (orig_h, orig_w):
-        elev_img = Image.fromarray(elevation_arr.astype(np.float32), mode="F")
+        elev_img = Image.fromarray(elevation_arr.astype(np.float32))
         elev_img = elev_img.resize((orig_w, orig_h), Image.Resampling.BILINEAR)
         elevation_arr = np.array(elev_img, dtype=np.float32)
 
@@ -171,7 +171,7 @@ def export_for_web(
     resized_rgb.save(texture_path, format="PNG", optimize=True)
 
     # 4. Resample Elevation Array (Bilinear interpolation)
-    elev_float_img = Image.fromarray(elevation_arr.astype(np.float32), mode="F")
+    elev_float_img = Image.fromarray(elevation_arr.astype(np.float32))
     resized_elev_img = elev_float_img.resize((target_w, target_h), Image.Resampling.BILINEAR)
     downsampled_elev = np.array(resized_elev_img, dtype=np.float32)
 
@@ -201,12 +201,12 @@ def export_for_web(
 
     # Clip to [0, 1] and quantize to 16-bit unsigned integer [0, 65535]
     u16_elev = np.round(np.clip(norm_elev, 0.0, 1.0) * 65535.0).astype(np.uint16)
-    heightmap_img = Image.fromarray(u16_elev, mode="I;16")
+    heightmap_img = Image.fromarray(u16_elev)
     heightmap_path = out_path / "heightmap.png"
     heightmap_img.save(heightmap_path)
 
     u16_sharp = np.round(np.clip(norm_sharp, 0.0, 1.0) * 65535.0).astype(np.uint16)
-    heightmap_sharp_img = Image.fromarray(u16_sharp, mode="I;16")
+    heightmap_sharp_img = Image.fromarray(u16_sharp)
     heightmap_sharp_path = out_path / "heightmap_sharp.png"
     heightmap_sharp_img.save(heightmap_sharp_path)
 

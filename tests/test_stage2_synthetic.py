@@ -83,8 +83,9 @@ def build_synthetic_scene(size: int = 256, seed: int = 42):
     return optical_rel, srtm_noisy, true_dem, building_mask, valid_mask
 
 
-def test_geotiff_roundtrip(out_dir: Path):
+def test_geotiff_roundtrip(tmp_path: Path):
     """Verify GeoTIFF generation, CRS reading, and is_georeferenced check."""
+    out_dir = tmp_path
     geo_path = out_dir / "test_georef.tif"
     width, height = 256, 256
     transform = from_origin(73.8567, 18.5204, 0.0001, 0.0001)  # Pune, India (degrees)

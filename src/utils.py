@@ -57,7 +57,7 @@ def save_grayscale(data: np.ndarray, path: Union[str, Path]) -> Path:
     # Scale to 16-bit unsigned integer range [0, 65535]
     u16_data = np.round(clipped * 65535.0).astype(np.uint16)
 
-    img = Image.fromarray(u16_data, mode="I;16")
+    img = Image.fromarray(u16_data)
     img.save(out_path)
     return out_path
 
@@ -81,7 +81,7 @@ def save_colormap(
     rgba = colormap_fn(clipped)
     rgb_uint8 = (rgba[:, :, :3] * 255.0).round().astype(np.uint8)
 
-    img = Image.fromarray(rgb_uint8, mode="RGB")
+    img = Image.fromarray(rgb_uint8)
     img.save(out_path)
     return out_path
 
@@ -112,7 +112,7 @@ def save_comparison(
             rgb_uint8 = np.stack([rgb_uint8] * 3, axis=-1)
         elif rgb_uint8.shape[2] == 4:  # Strip alpha
             rgb_uint8 = rgb_uint8[:, :, :3]
-        pil_rgb = Image.fromarray(rgb_uint8, mode="RGB")
+        pil_rgb = Image.fromarray(rgb_uint8)
     elif isinstance(rgb_image, Image.Image):
         pil_rgb = rgb_image.convert("RGB")
     else:
@@ -125,7 +125,7 @@ def save_comparison(
     colormap_fn = mpl.colormaps[cmap] if hasattr(mpl, "colormaps") else cm.get_cmap(cmap)
     rgba_depth = colormap_fn(clipped_depth)
     depth_uint8 = (rgba_depth[:, :, :3] * 255.0).round().astype(np.uint8)
-    pil_depth = Image.fromarray(depth_uint8, mode="RGB")
+    pil_depth = Image.fromarray(depth_uint8)
 
     if pil_depth.size != (target_w, target_h):
         pil_depth = pil_depth.resize((target_w, target_h), Image.Resampling.BILINEAR)

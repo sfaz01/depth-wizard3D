@@ -175,7 +175,7 @@ class DepthEstimator:
                 uint8_img = np.stack([uint8_img] * 3, axis=-1)
             elif uint8_img.shape[2] == 4:
                 uint8_img = uint8_img[:, :, :3]
-            pil_image = Image.fromarray(uint8_img, mode="RGB")
+            pil_image = Image.fromarray(uint8_img)
         elif isinstance(image_input, Image.Image):
             pil_image = image_input.convert("RGB")
         else:
